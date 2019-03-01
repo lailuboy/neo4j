@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -51,7 +51,7 @@ public class SwapperSetTest
     }
 
     @Test
-    public void mustReturnAllocationWithSwapper() throws Exception
+    public void mustReturnAllocationWithSwapper()
     {
         DummyPageSwapper a = new DummyPageSwapper( "a", 42 );
         DummyPageSwapper b = new DummyPageSwapper( "b", 43 );
@@ -64,7 +64,7 @@ public class SwapperSetTest
     }
 
     @Test
-    public void accessingFreedAllocationMustReturnNull() throws Exception
+    public void accessingFreedAllocationMustReturnNull()
     {
         int id = set.allocate( new DummyPageSwapper( "a", 42 ) );
         set.free( id );
@@ -72,7 +72,7 @@ public class SwapperSetTest
     }
 
     @Test
-    public void doubleFreeMustThrow() throws Exception
+    public void doubleFreeMustThrow()
     {
         int id = set.allocate( new DummyPageSwapper( "a", 42 ) );
         set.free( id );
@@ -82,7 +82,7 @@ public class SwapperSetTest
     }
 
     @Test
-    public void freedIdsMustNotBeReusedBeforeVacuum() throws Exception
+    public void freedIdsMustNotBeReusedBeforeVacuum()
     {
         PageSwapper swapper = new DummyPageSwapper( "a", 42 );
         PrimitiveIntSet ids = Primitive.intSet( 10_000 );
@@ -104,7 +104,7 @@ public class SwapperSetTest
     }
 
     @Test
-    public void freedAllocationsMustBecomeAvailableAfterVacuum() throws Exception
+    public void freedAllocationsMustBecomeAvailableAfterVacuum()
     {
         PrimitiveIntSet allocated = Primitive.intSet();
         PrimitiveIntSet freed = Primitive.intSet();
@@ -144,7 +144,7 @@ public class SwapperSetTest
     }
 
     @Test
-    public void vacuumMustNotDustOffAnyIdsWhenNoneHaveBeenFreed() throws Exception
+    public void vacuumMustNotDustOffAnyIdsWhenNoneHaveBeenFreed()
     {
         PageSwapper swapper = new DummyPageSwapper( "a", 42 );
         for ( int i = 0; i < 100; i++ )
@@ -152,10 +152,7 @@ public class SwapperSetTest
             set.allocate( swapper );
         }
         PrimitiveIntSet vacuumedIds = Primitive.intSet();
-        set.vacuum( swapperIds ->
-        {
-            vacuumedIds.addAll( ((PrimitiveIntSet) swapperIds).iterator() );
-        } );
+        set.vacuum( swapperIds -> vacuumedIds.addAll( ((PrimitiveIntSet) swapperIds).iterator() ) );
         if ( !vacuumedIds.isEmpty() )
         {
             throw new AssertionError( "Vacuum found id " + vacuumedIds + " when it should have found nothing" );
@@ -163,7 +160,7 @@ public class SwapperSetTest
     }
 
     @Test
-    public void mustNotUseZeroAsSwapperId() throws Exception
+    public void mustNotUseZeroAsSwapperId()
     {
         PageSwapper swapper = new DummyPageSwapper( "a", 42 );
         Matcher<Integer> isNotZero = is( not( 0 ) );
@@ -174,24 +171,24 @@ public class SwapperSetTest
     }
 
     @Test
-    public void gettingAllocationZeroMustThrow() throws Exception
+    public void gettingAllocationZeroMustThrow()
     {
         exception.expect( IllegalArgumentException.class );
-        set.getAllocation( 0 );
+        set.getAllocation( (short) 0 );
     }
 
     @Test
-    public void freeOfIdZeroMustThrow() throws Exception
+    public void freeOfIdZeroMustThrow()
     {
         exception.expect( IllegalArgumentException.class );
         set.free( 0 );
     }
 
     @Test
-    public void mustKeepTrackOfAvailableSwapperIds() throws Exception
+    public void mustKeepTrackOfAvailableSwapperIds()
     {
         PageSwapper swapper = new DummyPageSwapper( "a", 42 );
-        int initial = Short.MAX_VALUE - 1;
+        int initial = (1 << 21) - 2;
         assertThat( set.countAvailableIds(), is( initial ) );
         int id = set.allocate( swapper );
         assertThat( set.countAvailableIds(), is( initial - 1 ) );

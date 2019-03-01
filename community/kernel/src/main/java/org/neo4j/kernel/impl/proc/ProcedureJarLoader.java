@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -26,9 +26,10 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
 import org.neo4j.collection.PrefetchingRawIterator;
@@ -39,8 +40,6 @@ import org.neo4j.kernel.api.proc.CallableUserAggregationFunction;
 import org.neo4j.kernel.api.proc.CallableUserFunction;
 import org.neo4j.logging.Log;
 
-import static java.util.stream.Collectors.toList;
-
 /**
  * Given the location of a jarfile, reads the contents of the jar and returns compiled {@link CallableProcedure}
  * instances.
@@ -50,38 +49,59 @@ public class ProcedureJarLoader
     private final ReflectiveProcedureCompiler compiler;
     private final Log log;
 
-    public ProcedureJarLoader( ReflectiveProcedureCompiler compiler, Log log )
+    ProcedureJarLoader( ReflectiveProcedureCompiler compiler, Log log )
     {
         this.compiler = compiler;
         this.log = log;
     }
 
-    public Callables loadProcedures( URL jar ) throws Exception
-    {
-        return loadProcedures( jar, new URLClassLoader( new URL[]{jar}, this.getClass().getClassLoader() ),
-                new Callables() );
-    }
-
     public Callables loadProceduresFromDir( File root ) throws IOException, KernelException
     {
-        if ( !root.exists() )
+        if ( root == null || !root.exists() )
         {
             return Callables.empty();
         }
 
         Callables out = new Callables();
 
-        List<URL> list = Stream.of( root.listFiles( ( dir, name ) -> name.endsWith( ".jar" ) ) ).map( this::toURL )
-                .collect( toList() );
-        URL[] jarFiles = list.toArray( new URL[list.size()] );
+        File[] dirListing = root.listFiles( ( dir, name ) -> name.endsWith( ".jar" ) );
 
-        URLClassLoader loader = new URLClassLoader( jarFiles, this.getClass().getClassLoader() );
+        if ( dirListing == null )
+        {
+            return Callables.empty();
+        }
 
-        for ( URL jarFile : jarFiles )
+        if ( !allJarFilesAreValidZipFiles( Stream.of( dirListing ) ) )
+        {
+            throw new ZipException( "Some jar procedure files are invalid, see log for details." );
+        }
+
+        URL[] jarFilesURLs = Stream.of( dirListing ).map( this::toURL ).toArray( URL[]::new );
+
+        URLClassLoader loader = new URLClassLoader( jarFilesURLs, this.getClass().getClassLoader() );
+
+        for ( URL jarFile : jarFilesURLs )
         {
             loadProcedures( jarFile, loader, out );
         }
         return out;
+    }
+
+    private boolean allJarFilesAreValidZipFiles( Stream<File> jarFiles )
+    {
+        return jarFiles.allMatch( jarFile ->
+        {
+            try
+            {
+                new ZipFile( jarFile ).close();
+                return true;
+            }
+            catch ( IOException e )
+            {
+                log.error( String.format( "Plugin jar file: %s corrupted.", jarFile ) );
+                return false;
+            }
+        } );
     }
 
     private Callables loadProcedures( URL jar, ClassLoader loader, Callables target )
@@ -91,7 +111,7 @@ public class ProcedureJarLoader
         while ( classes.hasNext() )
         {
             Class<?> next = classes.next();
-            target.addAllProcedures( compiler.compileProcedure( next, Optional.empty(), false ) );
+            target.addAllProcedures( compiler.compileProcedure( next, null, false ) );
             target.addAllFunctions( compiler.compileFunction( next ) );
             target.addAllAggregationFunctions( compiler.compileAggregationFunction( next ) );
         }
@@ -134,7 +154,7 @@ public class ProcedureJarLoader
                         if ( name.endsWith( ".class" ) )
                         {
                             String className =
-                                    name.substring( 0, name.length() - ".class".length() ).replace( "/", "." );
+                                    name.substring( 0, name.length() - ".class".length() ).replace( '/', '.' );
 
                             try
                             {
@@ -194,12 +214,12 @@ public class ProcedureJarLoader
             return aggregationFunctions;
         }
 
-        public void addAllProcedures( List<CallableProcedure> callableProcedures )
+        void addAllProcedures( List<CallableProcedure> callableProcedures )
         {
             procedures.addAll( callableProcedures );
         }
 
-        public void addAllFunctions( List<CallableUserFunction> callableFunctions )
+        void addAllFunctions( List<CallableUserFunction> callableFunctions )
         {
             functions.addAll( callableFunctions );
         }

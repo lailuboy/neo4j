@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,14 +19,17 @@
  */
 package org.neo4j.kernel.api.index;
 
-import java.util.Map;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 
-import org.neo4j.kernel.api.schema.index.IndexDescriptor;
+import java.io.File;
+import java.util.StringJoiner;
+
+import org.neo4j.kernel.api.schema.index.SchemaIndexDescriptor;
 import org.neo4j.logging.Log;
 
-import static java.lang.String.format;
+import static org.neo4j.helpers.Format.duration;
 
-public class LoggingMonitor implements SchemaIndexProvider.Monitor
+public class LoggingMonitor implements IndexProvider.Monitor
 {
     private final Log log;
 
@@ -36,18 +39,50 @@ public class LoggingMonitor implements SchemaIndexProvider.Monitor
     }
 
     @Override
-    public void failedToOpenIndex( long indexId, IndexDescriptor indexDescriptor, String action, Exception cause )
+    public void failedToOpenIndex( long indexId, SchemaIndexDescriptor schemaIndexDescriptor, String action, Exception cause )
     {
         log.error( "Failed to open index:" + indexId + ". " + action, cause );
     }
 
     @Override
-    public void recoveryCompleted( long indexId, IndexDescriptor indexDescriptor, Map<String,Object> data )
+    public void recoveryCleanupRegistered( File indexFile, SchemaIndexDescriptor schemaIndexDescriptor )
     {
-        StringBuilder builder =
-                new StringBuilder(
-                        "Schema index recovery completed: indexId: " + indexId + " descriptor: " + indexDescriptor.toString() );
-        data.forEach( ( key, value ) -> builder.append( format( " %s: %s", key, value ) ) );
-        log.info( builder.toString() );
+        log.info( "Schema index cleanup job registered: " + indexDescription( indexFile, schemaIndexDescriptor ) );
+    }
+
+    @Override
+    public void recoveryCleanupStarted( File indexFile, SchemaIndexDescriptor schemaIndexDescriptor )
+    {
+        log.info( "Schema index cleanup job started: " + indexDescription( indexFile, schemaIndexDescriptor ) );
+    }
+
+    @Override
+    public void recoveryCleanupFinished( File indexFile, SchemaIndexDescriptor schemaIndexDescriptor,
+            long numberOfPagesVisited, long numberOfCleanedCrashPointers, long durationMillis )
+    {
+        StringJoiner joiner =
+                new StringJoiner( ", ", "Schema index cleanup job finished: " + indexDescription( indexFile, schemaIndexDescriptor ) + " ", "" );
+        joiner.add( "Number of pages visited: " + numberOfPagesVisited );
+        joiner.add( "Number of cleaned crashed pointers: " + numberOfCleanedCrashPointers );
+        joiner.add( "Time spent: " + duration( durationMillis ) );
+        log.info( joiner.toString() );
+    }
+
+    @Override
+    public void recoveryCleanupClosed( File indexFile, SchemaIndexDescriptor schemaIndexDescriptor )
+    {
+        log.info( "Schema index cleanup job closed: " + indexDescription( indexFile, schemaIndexDescriptor ) );
+    }
+
+    @Override
+    public void recoveryCleanupFailed( File indexFile, SchemaIndexDescriptor schemaIndexDescriptor, Throwable throwable )
+    {
+        log.info( String.format( "Schema index cleanup job failed: %s.%nCaused by: %s",
+                indexDescription( indexFile, schemaIndexDescriptor ), ExceptionUtils.getStackTrace( throwable ) ) );
+    }
+
+    private String indexDescription( File indexFile, SchemaIndexDescriptor schemaIndexDescriptor )
+    {
+        return "descriptor=" + schemaIndexDescriptor.toString() + ", indexFile=" + indexFile.getAbsolutePath();
     }
 }

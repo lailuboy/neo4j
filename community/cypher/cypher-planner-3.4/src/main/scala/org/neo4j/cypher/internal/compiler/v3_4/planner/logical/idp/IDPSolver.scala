@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -21,6 +21,7 @@ package org.neo4j.cypher.internal.compiler.v3_4.planner.logical.idp
 
 import org.neo4j.cypher.internal.compiler.v3_4.helpers.LazyIterable
 import org.neo4j.cypher.internal.compiler.v3_4.planner.logical.{ProjectingSelector, Selector}
+import org.neo4j.cypher.internal.planner.v3_4.spi.PlanningAttributes.Solveds
 
 import scala.collection.immutable.BitSet
 
@@ -45,7 +46,7 @@ class IDPSolver[Solvable, Result, Context](generator: IDPSolverStep[Solvable, Re
                          iterationDurationLimit: Long, // limits computation effort, reducing result quality
                          monitor: IDPSolverMonitor) {
 
-  def apply(seed: Seed[Solvable, Result], initialToDo: Set[Solvable])(implicit context: Context): Iterator[(Set[Solvable], Result)] = {
+  def apply(seed: Seed[Solvable, Result], initialToDo: Set[Solvable], context: Context, solveds: Solveds): Iterator[(Set[Solvable], Result)] = {
     val registry = registryFactory()
     val table = tableFactory(registry, seed)
     var toDo = registry.registerAll(initialToDo)
@@ -54,24 +55,30 @@ class IDPSolver[Solvable, Result, Context](generator: IDPSolverStep[Solvable, Re
     val goalSelector: Selector[(Goal, Result)] = projectingSelector.apply[(Goal, Result)](_._2, _)
 
     def generateBestCandidates(maxBlockSize: Int): Int = {
+      var largestFinishedIteration = 0
       var blockSize = 1
       var keepGoing = true
       val start = System.currentTimeMillis()
 
       while (keepGoing && blockSize <= maxBlockSize) {
+        var foundNoCandidate = true
         blockSize += 1
         val goals = toDo.subsets(blockSize)
         while (keepGoing && goals.hasNext) {
           val goal = goals.next()
           if (!table.contains(goal)) {
-            val candidates = LazyIterable(generator(registry, goal, table))
-            projectingSelector(candidates).foreach(table.put(goal, _))
+            val candidates = LazyIterable(generator(registry, goal, table, context, solveds))
+            projectingSelector(candidates).foreach { candidate =>
+              foundNoCandidate = false
+              table.put(goal, candidate)
+            }
             keepGoing = blockSize == 2 ||
               (table.size <= maxTableSize && (System.currentTimeMillis() - start) < iterationDurationLimit)
           }
         }
+        largestFinishedIteration = if (foundNoCandidate || goals.hasNext) largestFinishedIteration else blockSize
       }
-      blockSize - 1
+      largestFinishedIteration
     }
 
     def findBestCandidateInBlock(blockSize: Int): (Goal, Result) = {
@@ -98,9 +105,9 @@ class IDPSolver[Solvable, Result, Context](generator: IDPSolverStep[Solvable, Re
     while (toDo.size > 1) {
       iterations += 1
       monitor.startIteration(iterations)
-      val largestFinished = generateBestCandidates(toDo.size)
-      val (bestGoal, bestInBlock) = findBestCandidateInBlock(largestFinished)
-      monitor.endIteration(iterations, largestFinished, table.size)
+      val largestBlockSize = generateBestCandidates(toDo.size)
+      val (bestGoal, bestInBlock) = findBestCandidateInBlock(largestBlockSize)
+      monitor.endIteration(iterations, largestBlockSize, table.size)
       compactBlock(bestGoal, bestInBlock)
     }
     monitor.foundPlanAfter(iterations)

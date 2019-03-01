@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -21,18 +21,16 @@ package org.neo4j.unsafe.impl.batchimport.input;
 
 import java.io.OutputStream;
 import java.io.PrintStream;
-import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import org.neo4j.collection.primitive.PrimitiveLongCollections;
-import org.neo4j.collection.primitive.PrimitiveLongIterator;
+import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.locks.LockSupport;
+
 import org.neo4j.concurrent.AsyncEvent;
 import org.neo4j.concurrent.AsyncEvents;
 import org.neo4j.unsafe.impl.batchimport.cache.idmapping.string.DuplicateInputIdException;
 
 import static java.lang.String.format;
-import static java.util.Arrays.copyOf;
-import static java.util.Arrays.sort;
-
 import static org.neo4j.helpers.Exceptions.withMessage;
 
 public class BadCollector implements Collector
@@ -60,36 +58,52 @@ public class BadCollector implements Collector
         abstract InputException exception();
     }
 
-    public static final int BAD_RELATIONSHIPS = 0x1;
-    public static final int DUPLICATE_NODES = 0x2;
-    public static final int EXTRA_COLUMNS = 0x4;
-    public static final int COLLECT_ALL = BAD_RELATIONSHIPS | DUPLICATE_NODES | EXTRA_COLUMNS;
+    interface Monitor
+    {
+        default void beforeProcessEvent()
+        {
+        }
+    }
+
+    static final Monitor NO_MONITOR = new Monitor()
+    {
+    };
+
+    static final int BAD_RELATIONSHIPS = 0x1;
+    static final int DUPLICATE_NODES = 0x2;
+    static final int EXTRA_COLUMNS = 0x4;
+
+    static final int COLLECT_ALL = BAD_RELATIONSHIPS | DUPLICATE_NODES | EXTRA_COLUMNS;
     public static final long UNLIMITED_TOLERANCE = -1;
+    static final int DEFAULT_BACK_PRESSURE_THRESHOLD = 10_000;
 
     private final PrintStream out;
     private final long tolerance;
     private final int collect;
-    private long[] leftOverDuplicateNodeIds = new long[10];
-    private int leftOverDuplicateNodeIdsCursor;
+    private final int backPressureThreshold;
     private final boolean logBadEntries;
+    private final Monitor monitor;
 
     // volatile since one importer thread calls collect(), where this value is incremented and later the "main"
     // thread calls badEntries() to get a count.
     private final AtomicLong badEntries = new AtomicLong();
     private final AsyncEvents<ProblemReporter> logger;
     private final Thread eventProcessor;
+    private final LongAdder queueSize = new LongAdder();
 
     public BadCollector( OutputStream out, long tolerance, int collect )
     {
-        this( out, tolerance, collect, false );
+        this( out, tolerance, collect, DEFAULT_BACK_PRESSURE_THRESHOLD, false, NO_MONITOR );
     }
 
-    public BadCollector( OutputStream out, long tolerance, int collect, boolean skipBadEntriesLogging )
+    BadCollector( OutputStream out, long tolerance, int collect, int backPressureThreshold, boolean skipBadEntriesLogging, Monitor monitor )
     {
         this.out = new PrintStream( out );
         this.tolerance = tolerance;
         this.collect = collect;
+        this.backPressureThreshold = backPressureThreshold;
         this.logBadEntries = !skipBadEntriesLogging;
+        this.monitor = monitor;
         this.logger = new AsyncEvents<>( this::processEvent, AsyncEvents.Monitor.NONE );
         this.eventProcessor = new Thread( logger );
         this.eventProcessor.start();
@@ -97,13 +111,16 @@ public class BadCollector implements Collector
 
     private void processEvent( ProblemReporter report )
     {
+        monitor.beforeProcessEvent();
         out.println( report.message() );
+        queueSize.add( -1 );
     }
 
     @Override
-    public void collectBadRelationship( final InputRelationship relationship, final Object specificValue )
+    public void collectBadRelationship( Object startId, String startIdGroup, String type, Object endId,
+            String endIdGroup, Object specificValue )
     {
-        collect( new RelationshipsProblemReporter( relationship, specificValue ) );
+        collect( new RelationshipsProblemReporter( startId, startIdGroup, type, endId, endIdGroup, specificValue ) );
     }
 
     @Override
@@ -113,25 +130,15 @@ public class BadCollector implements Collector
     }
 
     @Override
-    public void collectDuplicateNode( final Object id, long actualId, final String group,
-            final String firstSource, final String otherSource )
+    public void collectDuplicateNode( final Object id, long actualId, final String group )
     {
-        collect( new NodesProblemReporter( id, group, firstSource, otherSource ) );
-
-        // We can do this right in here because as it turns out this is never called by multiple concurrent threads.
-        if ( leftOverDuplicateNodeIdsCursor == leftOverDuplicateNodeIds.length )
-        {
-            leftOverDuplicateNodeIds = Arrays.copyOf( leftOverDuplicateNodeIds, leftOverDuplicateNodeIds.length * 2 );
-        }
-        leftOverDuplicateNodeIds[leftOverDuplicateNodeIdsCursor++] = actualId;
+        collect( new NodesProblemReporter( id, group ) );
     }
 
     @Override
-    public PrimitiveLongIterator leftOverDuplicateNodesIds()
+    public boolean isCollectingBadRelationships()
     {
-        leftOverDuplicateNodeIds = copyOf( leftOverDuplicateNodeIds, leftOverDuplicateNodeIdsCursor );
-        sort( leftOverDuplicateNodeIds );
-        return PrimitiveLongCollections.iterator( leftOverDuplicateNodeIds );
+        return collects( BAD_RELATIONSHIPS );
     }
 
     private void collect( ProblemReporter report )
@@ -146,8 +153,13 @@ public class BadCollector implements Collector
                 // We're within the threshold
                 if ( logBadEntries )
                 {
-                    // Send this to the logger
+                    // Send this to the logger... but first apply some back pressure if queue is growing big
+                    while ( queueSize.sum() >= backPressureThreshold )
+                    {
+                        LockSupport.parkNanos( TimeUnit.MILLISECONDS.toNanos( 10 ) );
+                    }
                     logger.send( report );
+                    queueSize.add( 1 );
                 }
                 return; // i.e. don't treat this as an exception
             }
@@ -165,6 +177,7 @@ public class BadCollector implements Collector
         try
         {
             logger.awaitTermination();
+            eventProcessor.join();
         }
         catch ( InterruptedException e )
         {
@@ -190,13 +203,22 @@ public class BadCollector implements Collector
     private static class RelationshipsProblemReporter extends ProblemReporter
     {
         private String message;
-        private final InputRelationship relationship;
         private final Object specificValue;
+        private final Object startId;
+        private final String startIdGroup;
+        private final String type;
+        private final Object endId;
+        private final String endIdGroup;
 
-        RelationshipsProblemReporter( InputRelationship relationship, Object specificValue )
+        RelationshipsProblemReporter( Object startId, String startIdGroup, String type,
+                Object endId, String endIdGroup, Object specificValue )
         {
             super( BAD_RELATIONSHIPS );
-            this.relationship = relationship;
+            this.startId = startId;
+            this.startIdGroup = startIdGroup;
+            this.type = type;
+            this.endId = endId;
+            this.endIdGroup = endIdGroup;
             this.specificValue = specificValue;
         }
 
@@ -216,16 +238,18 @@ public class BadCollector implements Collector
         {
             if ( message == null )
             {
-                message = !isMissingData( relationship )
-                        ? format( "%s referring to missing node %s", relationship, specificValue )
-                        : format( "%s is missing data", relationship );
+                message = !isMissingData()
+                        ? format( "%s (%s)-[%s]->%s (%s) referring to missing node %s",
+                                startId, startIdGroup, type, endId, endIdGroup, specificValue )
+                        : format( "%s (%s)-[%s]->%s (%s) is missing data",
+                                startId, startIdGroup, type, endId, endIdGroup );
             }
             return message;
         }
 
-        private static boolean isMissingData( InputRelationship relationship )
+        private boolean isMissingData()
         {
-            return relationship.startNode() == null || relationship.endNode() == null || !relationship.hasType();
+            return startId == null || endId == null || type == null;
         }
     }
 
@@ -233,28 +257,24 @@ public class BadCollector implements Collector
     {
         private final Object id;
         private final String group;
-        private final String firstSource;
-        private final String otherSource;
 
-        NodesProblemReporter( Object id, String group, String firstSource, String otherSource )
+        NodesProblemReporter( Object id, String group )
         {
             super( DUPLICATE_NODES );
             this.id = id;
             this.group = group;
-            this.firstSource = firstSource;
-            this.otherSource = otherSource;
         }
 
         @Override
         public String message()
         {
-            return DuplicateInputIdException.message( id, group, firstSource, otherSource );
+            return DuplicateInputIdException.message( id, group );
         }
 
         @Override
         public InputException exception()
         {
-            return new DuplicateInputIdException( id, group, firstSource, otherSource );
+            return new DuplicateInputIdException( id, group );
         }
     }
 

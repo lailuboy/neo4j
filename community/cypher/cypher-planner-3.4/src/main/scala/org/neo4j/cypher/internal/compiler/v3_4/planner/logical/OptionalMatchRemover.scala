@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -51,7 +51,8 @@ case object OptionalMatchRemover extends PlannerQueryRewriter {
 
   private def rewrite(projectionDeps: Iterable[LogicalVariable], graph: QueryGraph, proj: QueryProjection, tail: Option[PlannerQuery]): RegularPlannerQuery = {
     val updateDeps = graph.mutatingPatterns.flatMap(_.dependencies)
-    val dependencies: Set[IdName] = projectionDeps.map(IdName.fromVariable).toSet ++ updateDeps
+    val dependencies: Set[String] = projectionDeps.map(_.name).toSet ++ updateDeps
+    val gen = new PositionGenerator
 
     val optionalMatches = graph.optionalMatches.flatMapWithTail {
       (original: QueryGraph, tail: Seq[QueryGraph]) =>
@@ -80,13 +81,14 @@ case object OptionalMatchRemover extends PlannerQueryRewriter {
 
           val elementsToKeep = {
             val variablesNeededForPredicates =
-              remaining.flatMap(expression => expression.dependencies.map(IdName.fromVariable))
+              remaining.flatMap(expression => expression.dependencies.map(_.name))
             smallestGraphIncluding(original, mustInclude ++ original.argumentIds ++ variablesNeededForPredicates)
           }
 
           val (patternsToKeep, patternsToFilter) = original.patternRelationships.partition(r => elementsToKeep(r.name))
           val patternNodes = original.patternNodes.filter(elementsToKeep.apply)
-          val patternPredicates = patternsToFilter.map(toAst(elementsToKeep, predicatesForPatterns, _))
+
+          val patternPredicates = patternsToFilter.map(toAst(elementsToKeep, predicatesForPatterns, gen, _))
 
           val newOptionalGraph = original.
             withPatternRelationships(patternsToKeep).
@@ -116,17 +118,17 @@ case object OptionalMatchRemover extends PlannerQueryRewriter {
     * @return Map of label and property equality comparisons to move to pattern expressions,
     *         and the set of remaining predicates
     */
-  private def partitionPredicates(predicates: Set[Predicate], kept: Set[IdName]): (Map[IdName, LabelsAndEquality], Set[Expression]) = {
+  private def partitionPredicates(predicates: Set[Predicate], kept: Set[String]): (Map[String, LabelsAndEquality], Set[Expression]) = {
 
-    val patternPredicates = mutable.Map.empty[IdName, LabelsAndEquality]
+    val patternPredicates = mutable.Map.empty[String, LabelsAndEquality]
     val predicatesToKeep = mutable.Set.empty[Expression]
 
-    def addLabel(idName: IdName, labelName: LabelName) = {
+    def addLabel(idName: String, labelName: LabelName) = {
       val current = patternPredicates.getOrElse(idName, LabelsAndEquality.empty)
       patternPredicates += idName -> current.copy(labels = current.labels :+ labelName)
     }
 
-    def addProperty(idName: IdName, prop: PropertyKeyName, rhs: Expression) = {
+    def addProperty(idName: String, prop: PropertyKeyName, rhs: Expression) = {
       val current = patternPredicates.getOrElse(idName, LabelsAndEquality.empty)
       patternPredicates += idName -> current.copy(equality = current.equality :+ prop -> rhs)
     }
@@ -153,27 +155,39 @@ case object OptionalMatchRemover extends PlannerQueryRewriter {
         case _ => false
       }
 
-  private def toAst(elementsToKeep: Set[IdName], predicates: Map[IdName, LabelsAndEquality], pattern: PatternRelationship) = {
-    val pos = InputPosition.NONE
-    def createVariable(name: IdName): Option[Variable] =
+  private class PositionGenerator {
+    private var pos: InputPosition = InputPosition.NONE
+
+    def nextPosition(): InputPosition = {
+      val current = pos
+      //this is not nice but we want to make sure don't collide with "real positions"
+      pos = pos.copy(offset = current.offset - 1)
+      current
+    }
+  }
+
+  private def toAst(elementsToKeep: Set[String], predicates: Map[String, LabelsAndEquality], gen: PositionGenerator, pattern: PatternRelationship) = {
+    def createVariable(name: String): Option[Variable] =
       if (!elementsToKeep(name))
         None
       else {
-        Some(Variable(name.name)(pos))
+        Some(Variable(name)(gen.nextPosition()))
       }
 
-    def createNode(name: IdName): NodePattern = {
+    def createNode(name: String): NodePattern = {
       val labelsAndProps = predicates.getOrElse(name, LabelsAndEquality.empty)
-      val props = if (labelsAndProps.equality.isEmpty) None else Some(MapExpression(labelsAndProps.equality)(pos))
-      NodePattern(createVariable(name), labels = labelsAndProps.labels, properties = props)(pos)
+      val props = if (labelsAndProps.equality.isEmpty) None else Some(MapExpression(labelsAndProps.equality)(
+        gen.nextPosition()))
+      NodePattern(createVariable(name), labels = labelsAndProps.labels, properties = props)(gen.nextPosition())
     }
 
     val relName = createVariable(pattern.name)
     val leftNode = createNode(pattern.nodes._1)
     val rightNode = createNode(pattern.nodes._2)
-    val relPattern = RelationshipPattern(relName, pattern.types, length = None, properties = None, pattern.dir)(pos)
-    val chain = RelationshipChain(leftNode, relPattern, rightNode)(pos)
-    PatternExpression(RelationshipsPattern(chain)(pos))
+    val relPattern = RelationshipPattern(relName, pattern.types, length = None, properties = None, pattern.dir)(
+      gen.nextPosition())
+    val chain = RelationshipChain(leftNode, relPattern, rightNode)(gen.nextPosition())
+    PatternExpression(RelationshipsPattern(chain)(gen.nextPosition()))
   }
 
   implicit class FlatMapWithTailable(in: IndexedSeq[QueryGraph]) {
@@ -195,7 +209,7 @@ case object OptionalMatchRemover extends PlannerQueryRewriter {
     }
   }
 
-  def smallestGraphIncluding(qg: QueryGraph, mustInclude: Set[IdName]): Set[IdName] = {
+  def smallestGraphIncluding(qg: QueryGraph, mustInclude: Set[String]): Set[String] = {
     if (mustInclude.size < 2)
       mustInclude intersect qg.allCoveredIds
     else {
@@ -203,7 +217,7 @@ case object OptionalMatchRemover extends PlannerQueryRewriter {
       for {
         lhs <- mustInclude
         rhs <- mustInclude
-        if lhs.name < rhs.name
+        if lhs < rhs
       } {
         accumulatedElements ++= findPathBetween(qg, lhs, rhs)
       }
@@ -211,11 +225,11 @@ case object OptionalMatchRemover extends PlannerQueryRewriter {
     }
   }
 
-  private case class PathSoFar(end: IdName, alreadyVisited: Set[PatternRelationship]) {
-    def coveredIds: Set[IdName] = alreadyVisited.flatMap(_.coveredIds) + end
+  private case class PathSoFar(end: String, alreadyVisited: Set[PatternRelationship]) {
+    def coveredIds: Set[String] = alreadyVisited.flatMap(_.coveredIds) + end
   }
 
-  private def hasExpandedInto(from: Seq[PathSoFar], into: Seq[PathSoFar]): Seq[Set[IdName]] =
+  private def hasExpandedInto(from: Seq[PathSoFar], into: Seq[PathSoFar]): Seq[Set[String]] =
     for {lhs <- from
          rhs <- into
          if rhs.alreadyVisited.exists(p => p.coveredIds.contains(lhs.end))}
@@ -234,7 +248,7 @@ case object OptionalMatchRemover extends PlannerQueryRewriter {
     }
   }
 
-  private def findPathBetween(qg: QueryGraph, startFromL: IdName, startFromR: IdName): Set[IdName] = {
+  private def findPathBetween(qg: QueryGraph, startFromL: String, startFromR: String): Set[String] = {
     var l = Seq(PathSoFar(startFromL, Set.empty))
     var r = Seq(PathSoFar(startFromR, Set.empty))
     (0 to qg.patternRelationships.size) foreach { i =>

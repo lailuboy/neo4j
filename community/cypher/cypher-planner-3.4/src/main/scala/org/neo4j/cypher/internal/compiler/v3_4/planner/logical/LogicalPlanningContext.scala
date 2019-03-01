@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,13 +19,15 @@
  */
 package org.neo4j.cypher.internal.compiler.v3_4.planner.logical
 
+import org.neo4j.csv.reader.Configuration
 import org.neo4j.csv.reader.Configuration.DEFAULT_LEGACY_STYLE_QUOTING
-import org.neo4j.cypher.internal.compiler.v3_4.planner.logical.Metrics.QueryGraphSolverInput
-import org.neo4j.cypher.internal.compiler.v3_4.planner.logical.steps.LogicalPlanProducer
+import org.neo4j.cypher.internal.compiler.v3_4.planner.logical.Metrics.{CardinalityModel, CostModel, QueryGraphSolverInput}
+import org.neo4j.cypher.internal.compiler.v3_4.planner.logical.steps.{CostComparisonListener, LogicalPlanProducer}
 import org.neo4j.cypher.internal.frontend.v3_4.phases.InternalNotificationLogger
 import org.neo4j.cypher.internal.frontend.v3_4.semantics.SemanticTable
-import org.neo4j.cypher.internal.ir.v3_4.{IdName, StrictnessMode}
-import org.neo4j.cypher.internal.planner.v3_4.spi.PlanContext
+import org.neo4j.cypher.internal.ir.v3_4.StrictnessMode
+import org.neo4j.cypher.internal.planner.v3_4.spi.{GraphStatistics, PlanContext}
+import org.neo4j.cypher.internal.planner.v3_4.spi.PlanningAttributes.{Cardinalities, Solveds}
 import org.neo4j.cypher.internal.util.v3_4.Cardinality
 import org.neo4j.cypher.internal.v3_4.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.v3_4.expressions.Variable
@@ -41,11 +43,15 @@ case class LogicalPlanningContext(planContext: PlanContext,
                                   errorIfShortestPathFallbackUsedAtRuntime: Boolean = false,
                                   errorIfShortestPathHasCommonNodesAtRuntime: Boolean = true,
                                   legacyCsvQuoteEscaping: Boolean = DEFAULT_LEGACY_STYLE_QUOTING,
+                                  csvBufferSize: Int = 2 * Configuration.MB,
                                   config: QueryPlannerConfiguration = QueryPlannerConfiguration.default,
-                                  leafPlanUpdater: LogicalPlan => LogicalPlan = identity) {
-  def withStrictness(strictness: StrictnessMode) = copy(input = input.withPreferredStrictness(strictness))
+                                  leafPlanUpdater: LogicalPlan => LogicalPlan = identity,
+                                  costComparisonListener: CostComparisonListener) {
+  def withStrictness(strictness: StrictnessMode): LogicalPlanningContext =
+    copy(input = input.withPreferredStrictness(strictness))
 
-  def recurse(plan: LogicalPlan) = copy(input = input.recurse(plan))
+  def withUpdatedCardinalityInformation(plan: LogicalPlan, solveds: Solveds, cardinalities: Cardinalities): LogicalPlanningContext =
+    copy(input = input.recurse(plan, solveds, cardinalities))
 
   def forExpressionPlanning(nodes: Iterable[Variable], rels: Iterable[Variable]): LogicalPlanningContext = {
     val tableWithNodes = nodes.foldLeft(semanticTable) { case (table, node) => table.addNode(node) }
@@ -56,23 +62,23 @@ case class LogicalPlanningContext(planContext: PlanContext,
     )
   }
 
-  def statistics = planContext.statistics
+  def statistics: GraphStatistics = planContext.statistics
 
-  def cost = metrics.cost
+  def cost: CostModel = metrics.cost
 
-  def cardinality = metrics.cardinality
+  def cardinality: CardinalityModel = metrics.cardinality
 }
 
 object NodeIdName {
-  def unapply(v: Any)(implicit context: LogicalPlanningContext): Option[IdName] = v match {
-    case variable@Variable(name) if context.semanticTable.isNode(variable) => Some(IdName(variable.name))
+  def unapply(v: Any, context: LogicalPlanningContext): Option[String] = v match {
+    case variable@Variable(name) if context.semanticTable.isNode(variable) => Some(variable.name)
     case _ => None
   }
 }
 
 object RelationshipIdName {
-  def unapply(v: Any)(implicit context: LogicalPlanningContext): Option[IdName] = v match {
-    case variable@Variable(name) if context.semanticTable.isRelationship(variable) => Some(IdName(variable.name))
+  def unapply(v: Any, context: LogicalPlanningContext): Option[String] = v match {
+    case variable@Variable(name) if context.semanticTable.isRelationship(variable) => Some(variable.name)
     case _ => None
   }
 }

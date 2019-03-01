@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -31,11 +31,10 @@ import org.neo4j.cypher.internal.tracing.{CompilationTracer, TimingCompilationTr
 import org.neo4j.graphdb.Result
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.factory.GraphDatabaseSettings
+import org.neo4j.internal.kernel.api.SchemaRead
 import org.neo4j.internal.kernel.api.security.AccessMode
 import org.neo4j.kernel.api.query.SchemaIndexUsage
-import org.neo4j.kernel.api.ReadOperations
 import org.neo4j.kernel.configuration.Config
-import org.neo4j.kernel.impl.locking.ResourceTypes
 import org.neo4j.kernel.impl.query.{QueryExecutionMonitor, TransactionalContext}
 import org.neo4j.kernel.monitoring.{Monitors => KernelMonitors}
 import org.neo4j.kernel.{GraphDatabaseQueryService, api}
@@ -73,7 +72,7 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
 
   private val executionMonitor = kernelMonitors.newMonitor(classOf[QueryExecutionMonitor])
 
-  private val cacheAccessor = new MonitoringCacheAccessor[String, (ExecutionPlan, Map[String, Any])](cacheMonitor)
+  private val cacheAccessor = new MonitoringCacheAccessor[String, (ExecutionPlan, Map[String, Any], Seq[String])](cacheMonitor)
 
   private val preParsedQueries = new LFUCache[String, PreParsedQuery](getPlanCacheSize)
   private val parsedQueries = new LFUCache[String, ParsedQuery](getPlanCacheSize)
@@ -93,10 +92,10 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
     profile(query, ValueConversion.asValues(scalaParams), context)
   }
 
-  def profile(query: String, mapValue: MapValue, context: TransactionalContext): Result = {
-    // we got deep java parameters => convert to shallow scala parameters for passing into the engine
-    val (preparedPlanExecution, wrappedContext) = planQuery(context)
-    preparedPlanExecution.profile(wrappedContext, mapValue)
+  def profile(query: String, mapParams: MapValue, context: TransactionalContext): Result = {
+    val (preparedPlanExecution, wrappedContext, queryParamNames) = planQuery(context)
+    checkParameters(queryParamNames, mapParams, preparedPlanExecution.extractedParams)
+    preparedPlanExecution.profile(wrappedContext, mapParams)
   }
 
   def execute(query: String, scalaParams: Map[String, Any], context: TransactionalContext): Result = {
@@ -107,12 +106,16 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
 
   def execute(query: String, javaParams: JavaMap[String, AnyRef], context: TransactionalContext): Result = {
     // we got deep java parameters => convert to shallow scala parameters for passing into the engine
+    // TODO: Should we use ValueUtils.asMapValue here like in GraphDatabaseFacade
     val scalaParams = scalaValues.asShallowScalaMap(javaParams)
    execute(query, ValueConversion.asValues(scalaParams), context)
   }
 
   def execute(query: String, mapParams: MapValue, context: TransactionalContext): Result = {
-    val (preparedPlanExecution, wrappedContext) = planQuery(context)
+    val (preparedPlanExecution, wrappedContext, queryParamNames) = planQuery(context)
+    if (preparedPlanExecution.executionMode.name != "explain") {
+      checkParameters(queryParamNames, mapParams, preparedPlanExecution.extractedParams)
+    }
     preparedPlanExecution.execute(wrappedContext, mapParams)
   }
 
@@ -139,7 +142,7 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
   }
 
   @throws(classOf[SyntaxException])
-  protected def planQuery(transactionalContext: TransactionalContext): (PreparedPlanExecution, TransactionalContextWrapper) = {
+  protected def planQuery(transactionalContext: TransactionalContext): (PreparedPlanExecution, TransactionalContextWrapper, Seq[String]) = {
     val executingQuery = transactionalContext.executingQuery()
     val queryText = executingQuery.queryText()
     executionMonitor.startQueryExecution(executingQuery)
@@ -166,24 +169,25 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
         // NOTE: This will force read access mode if the current transaction did not have it
         val revertable = tc.restrictCurrentTransaction(tc.securityContext.withMode(AccessMode.Static.READ))
 
-        val ((plan: ExecutionPlan, extractedParameters), touched) = try {
+        val ((plan: ExecutionPlan, extractedParameters, queryParamNames), touched) = try {
           // fetch plan cache
-          val cache: QueryCache[String, (ExecutionPlan, Map[String, Any])] = getOrCreateFromSchemaState(tc.readOperations, {
+          val cache: QueryCache[String, (ExecutionPlan, Map[String, Any], Seq[String])] = getOrCreateFromSchemaState(tc.schemaRead, {
             cacheMonitor.cacheFlushDetected(tc.statement)
-            val lruCache = new LFUCache[String, (ExecutionPlan, Map[String, Any])](getPlanCacheSize)
+            val lruCache = new LFUCache[String, (ExecutionPlan, Map[String, Any], Seq[String])](getPlanCacheSize)
             new QueryCache(cacheAccessor, lruCache)
           })
 
-          def isStale(plan: ExecutionPlan, ignored: Map[String, Any]) = plan.isStale(lastCommittedTxId, tc)
-          val producePlan = new PlanProducer[(ExecutionPlan, Map[String, Any])] {
-            override def produceWithExistingTX: (ExecutionPlan, Map[String, Any]) = {
+          def isStale(plan: ExecutionPlan, ignored1: Map[String, Any], ignored2: Seq[String]) = plan.isStale(lastCommittedTxId, tc)
+
+          val producePlan = new PlanProducer[(ExecutionPlan, Map[String, Any], Seq[String])] {
+            override def produceWithExistingTX: (ExecutionPlan, Map[String, Any], Seq[String]) = {
               val parsedQuery = parsePreParsedQuery(preParsedQuery, phaseTracer)
               parsedQuery.plan(tc, phaseTracer)
             }
           }
 
           val stateBefore = schemaState(tc)
-          var (plan: (ExecutionPlan, Map[String, Any]), touched: Boolean) = cache.getOrElseUpdate(cacheKey, queryText, (isStale _).tupled, producePlan)
+          var (plan: (ExecutionPlan, Map[String, Any], Seq[String]), touched: Boolean) = cache.getOrElseUpdate(cacheKey, queryText, (isStale _).tupled, producePlan)
           if (!touched) {
             val labelIds: Seq[Long] = extractPlanLabels(plan, preParsedQuery.version, tc)
             if (labelIds.nonEmpty) {
@@ -212,7 +216,7 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
         } else {
           tc.cleanForReuse()
           tc.notifyPlanningCompleted(plan.plannerInfo)
-          return (PreparedPlanExecution(plan, executionMode, extractedParameters), tc)
+          return (PreparedPlanExecution(plan, executionMode, extractedParameters), tc, queryParamNames)
         }
 
         n += 1
@@ -222,15 +226,25 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
     throw new IllegalStateException("Could not execute query due to insanely frequent schema changes")
   }
 
+  @throws(classOf[ParameterNotFoundException])
+  private def checkParameters(queryParams: Seq[String], givenParams: MapValue, extractedParams: Map[String, Any]) {
+    exceptionHandler.runSafely {
+      val missingKeys = queryParams.filter(key => !(givenParams.containsKey(key) || extractedParams.contains(key)))
+      if (missingKeys.nonEmpty) {
+        throw new ParameterNotFoundException("Expected parameter(s): " + missingKeys.mkString(", "))
+      }
+    }
+  }
+
   private def releasePlanLabels(tc: TransactionalContextWrapper, labelIds: Seq[Long]) = {
-    tc.readOperations.releaseShared(ResourceTypes.LABEL, labelIds.toArray[Long]:_*)
+    tc.kernelTransaction.locks().releaseSharedLabelLock(labelIds.toArray[Long]:_*)
   }
 
   private def lockPlanLabels(tc: TransactionalContextWrapper, labelIds: Seq[Long]) = {
-    tc.readOperations.acquireShared(ResourceTypes.LABEL, labelIds.toArray[Long]:_*)
+    tc.kernelTransaction.locks().acquireSharedLabelLock(labelIds.toArray[Long]:_*)
   }
 
-  private def extractPlanLabels(plan: (ExecutionPlan, Map[String, Any]), version: CypherVersion, tc:
+  private def extractPlanLabels(plan: (ExecutionPlan, Map[String, Any], Seq[String]), version: CypherVersion, tc:
   TransactionalContextWrapper): Seq[Long] = {
     import scala.collection.JavaConverters._
 
@@ -239,7 +253,7 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
     }
 
     def allLabels: Seq[Long] = {
-      tc.statement.readOperations().labelsGetAllTokens().asScala.map(t => t.id().toLong).toSeq
+      tc.kernelTransaction.tokenRead().labelsGetAllTokens().asScala.map(t => t.id().toLong).toSeq
     }
 
     version match {
@@ -252,11 +266,11 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
   }
 
   private def schemaState(tc: TransactionalContextWrapper): QueryCache[MonitoringCacheAccessor[String,
-    (ExecutionPlan, Map[String, Any])], LFUCache[String, (ExecutionPlan, Map[String, Any])]] = {
-    tc.readOperations.schemaStateGet(this)
+    (ExecutionPlan, Map[String, Any], Seq[String])], LFUCache[String, (ExecutionPlan, Map[String, Any], Seq[String])]] = {
+    tc.schemaRead.schemaStateGet(this)
   }
 
-  private def getOrCreateFromSchemaState[V](operations: ReadOperations, creator: => V) = {
+  private def getOrCreateFromSchemaState[V](operations: SchemaRead, creator: => V) = {
     val javaCreator = new java.util.function.Function[ExecutionEngine, V]() {
       def apply(key: ExecutionEngine) = creator
     }
@@ -296,6 +310,18 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
       queryService, GraphDatabaseSettings.csv_legacy_quote_escaping,
       GraphDatabaseSettings.csv_legacy_quote_escaping.getDefaultValue.toBoolean
     )
+    val csvBufferSize = optGraphSetting[java.lang.Integer](
+      queryService, GraphDatabaseSettings.csv_buffer_size,
+      GraphDatabaseSettings.csv_buffer_size.getDefaultValue.toInt
+    )
+    val planWithMinimumCardinalityEstimates = optGraphSetting[java.lang.Boolean](
+      queryService, GraphDatabaseSettings.cypher_plan_with_minimum_cardinality_estimates,
+      GraphDatabaseSettings.cypher_plan_with_minimum_cardinality_estimates.getDefaultValue.toBoolean
+    )
+    val lenientCreateRelationship = optGraphSetting[java.lang.Boolean](
+      queryService, GraphDatabaseSettings.cypher_lenient_create_relationship,
+      GraphDatabaseSettings.cypher_lenient_create_relationship.getDefaultValue.toBoolean
+    )
 
     if (((version != CypherVersion.v2_3) || (version != CypherVersion.v3_1) || (version != CypherVersion.v3_4) || (version != CypherVersion.v3_3)) &&
       (planner == CypherPlanner.greedy || planner == CypherPlanner.idp || planner == CypherPlanner.dp)) {
@@ -308,7 +334,8 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
     val compatibilityCache = new CompatibilityCache(compatibilityFactory)
     new CompilerEngineDelegator(queryService, kernelMonitors, version, planner, runtime,
       useErrorsOverWarnings, idpMaxTableSize, idpIterationDuration, errorIfShortestPathFallbackUsedAtRuntime,
-      errorIfShortestPathHasCommonNodesAtRuntime, legacyCsvQuoteEscaping, logProvider, compatibilityCache)
+      errorIfShortestPathHasCommonNodesAtRuntime, legacyCsvQuoteEscaping, csvBufferSize, planWithMinimumCardinalityEstimates,
+      lenientCreateRelationship, logProvider, compatibilityCache)
   }
 
   private def getPlanCacheSize: Int =

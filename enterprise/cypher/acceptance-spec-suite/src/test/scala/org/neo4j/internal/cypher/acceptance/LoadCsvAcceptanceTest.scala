@@ -1,21 +1,24 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
- * This file is part of Neo4j.
- *
- * Neo4j is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
+ * This file is part of Neo4j Enterprise Edition. The included source
+ * code can be redistributed and/or modified under the terms of the
+ * GNU AFFERO GENERAL PUBLIC LICENSE Version 3
+ * (http://www.fsf.org/licensing/licenses/agpl-3.0.html) with the
+ * Commons Clause, as found in the associated LICENSE.txt file.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU Affero General Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Neo4j object code can be licensed independently from the source
+ * under separate terms from the AGPL. Inquiries can be directed to:
+ * licensing@neo4j.com
+ *
+ * More information is also available at:
+ * https://neo4j.com/licensing/
  */
 package org.neo4j.internal.cypher.acceptance
 
@@ -26,7 +29,7 @@ import java.util.Collections.emptyMap
 
 import org.neo4j.cypher._
 import org.neo4j.cypher.internal.frontend.v3_4.helpers.StringHelper.RichString
-import org.neo4j.cypher.internal.runtime.CreateTempFileTestSupport
+import org.neo4j.cypher.internal.runtime.{CreateTempFileTestSupport, InternalExecutionResult}
 import org.neo4j.cypher.internal.v3_4.logical.plans.NodeIndexSeek
 import org.neo4j.graphdb.QueryExecutionException
 import org.neo4j.graphdb.config.Configuration
@@ -40,11 +43,9 @@ import scala.collection.JavaConverters._
 
 class LoadCsvAcceptanceTest
   extends ExecutionEngineFunSuite with BeforeAndAfterAll
-  with QueryStatisticsTestSupport with CreateTempFileTestSupport with CypherComparisonSupport{
+  with QueryStatisticsTestSupport with CreateTempFileTestSupport with CypherComparisonSupport with RunWithConfigTestSupport {
 
-  val expectedToSucceed = Configs.Interpreted - Configs.Cost2_3
-  val expectedToFail = Configs.Interpreted - Configs.Cost2_3 + TestConfiguration(Versions.Default, Planners.Default,
-    Runtimes(Runtimes.Default, Runtimes.ProcedureOrSchema, Runtimes.CompiledSource, Runtimes.CompiledBytecode))
+  val expectedToFail = Configs.AbsolutelyAll - Configs.Compiled - Configs.Cost2_3
 
   def csvUrls(f: PrintWriter => Unit) = Seq(
     createCSVTempFileURL(f),
@@ -100,7 +101,7 @@ class LoadCsvAcceptanceTest
         writer.println("6,bye")
     })
 
-    val result = executeWith(expectedToSucceed,
+    val result = executeWith(Configs.UpdateConf,
       s"""LOAD CSV WITH HEADERS FROM '${urls.head}' AS row
          | WITH row.field1 as field, row.OrderId as order
          | MATCH (o) WHERE o.OrderId = order
@@ -119,7 +120,7 @@ class LoadCsvAcceptanceTest
     })
 
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
       assertStats(result, nodesCreated = 3, propertiesWritten = 3)
     }
   }
@@ -147,7 +148,7 @@ class LoadCsvAcceptanceTest
         writer.println("3")
     })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line CREATE (a {number: line[0]}) RETURN a.number")
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line CREATE (a {number: line[0]}) RETURN a.number")
       assertStats(result, nodesCreated = 3, propertiesWritten = 3)
 
       result.columnAs[Long]("a.number").toList === List("")
@@ -162,7 +163,7 @@ class LoadCsvAcceptanceTest
         writer.println("3, 'Cash'")
     })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
       assertStats(result, nodesCreated = 3, propertiesWritten = 3)
     }
   }
@@ -176,7 +177,7 @@ class LoadCsvAcceptanceTest
         writer.println("3, 'Cash'")
     })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed,
+      val result = executeWith(Configs.UpdateConf,
         s"LOAD CSV WITH HEADERS FROM '$url' AS line CREATE (a {id: line.id, name: line.name}) RETURN a.name"
       )
 
@@ -196,7 +197,7 @@ class LoadCsvAcceptanceTest
         writer.println("5,'Emerald',")
     })
     for (url <- urls) {
-      val result =executeWith(expectedToSucceed, s"LOAD CSV WITH HEADERS FROM '$url' AS line RETURN line.x")
+      val result =executeWith(Configs.UpdateConf, s"LOAD CSV WITH HEADERS FROM '$url' AS line RETURN line.x")
       assert(result.toList === List(
         Map("line.x" -> "0"),
         Map("line.x" -> null),
@@ -218,7 +219,7 @@ class LoadCsvAcceptanceTest
         writer.println("5,'Emerald',")
     })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed + Configs.SlottedInterpreted, s"LOAD CSV WITH HEADERS FROM '$url' AS line WITH line WHERE line.x IS NOT NULL RETURN line.name")
+      val result = executeWith(Configs.UpdateConf + Configs.SlottedInterpreted, s"LOAD CSV WITH HEADERS FROM '$url' AS line WITH line WHERE line.x IS NOT NULL RETURN line.name")
       assert(result.toList === List(
         Map("line.name" -> "'Aardvark'"),
         Map("line.name" -> "'Cash'"),
@@ -236,7 +237,7 @@ class LoadCsvAcceptanceTest
         writer.println( """"String with ""quotes"" in it"""")
     })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line RETURN line as string").toList
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line RETURN line as string").toList
       assert(result === List(
         Map("string" -> Seq("String without quotes")),
         Map("string" -> Seq("'String", " with single quotes'")),
@@ -254,7 +255,7 @@ class LoadCsvAcceptanceTest
     })
 
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line RETURN line")
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line RETURN line")
       assert(result.toList === List(Map("line" -> Seq("1", "'Aadvark'", "0")), Map("line" -> Seq("2", "'Babs'")),
         Map("line" -> Seq("3", "'Cash'", "1"))))
     }
@@ -268,7 +269,7 @@ class LoadCsvAcceptanceTest
         writer.print("3,'Cash',1\n")
     })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line RETURN line")
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line RETURN line")
       assert(result.toList === List(Map("line" -> Seq("1", "'Aadvark'", "0")), Map("line" -> Seq("2", "'Babs'")),
         Map("line" -> Seq("3", "'Cash'", "1"))))
     }
@@ -282,7 +283,7 @@ class LoadCsvAcceptanceTest
         writer.print("3,'Cash',1\r")
     })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line RETURN line")
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line RETURN line")
       assert(result.toList === List(Map("line" -> Seq("1", "'Aadvark'", "0")), Map("line" -> Seq("2", "'Babs'")),
         Map("line" -> Seq("3", "'Cash'", "1"))))
     }
@@ -296,7 +297,7 @@ class LoadCsvAcceptanceTest
         writer.println("3;'Cash';1")
     })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line FIELDTERMINATOR ';' RETURN line")
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line FIELDTERMINATOR ';' RETURN line")
       assert(result.toList === List(Map("line" -> Seq("1", "'Aadvark'", "0")), Map("line" -> Seq("2", "'Babs'")),
         Map("line" -> Seq("3", "'Cash'", "1"))))
     }
@@ -309,7 +310,7 @@ class LoadCsvAcceptanceTest
         writer.println("something")
     })
 
-    val result = executeWith(expectedToSucceed, "LOAD CSV FROM \"" + url + "\" AS line RETURN line as string").toList
+    val result = executeWith(Configs.UpdateConf, "LOAD CSV FROM \"" + url + "\" AS line RETURN line as string").toList
     assert(result === List(Map("string" -> Seq("something"))))
   }
 
@@ -320,14 +321,14 @@ class LoadCsvAcceptanceTest
         writer.println("something")
     })
 
-    val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line RETURN line as string").toList
+    val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line RETURN line as string").toList
     assert(result === List(Map("string" -> Seq("something"))))
   }
 
   test("empty file does not create anything") {
     val urls = csvUrls(writer => {})
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
       assertStats(result, nodesCreated = 0)
     }
   }
@@ -338,7 +339,7 @@ class LoadCsvAcceptanceTest
             writer.println("something")
     ).cypherEscape
 
-    val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
+    val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
     assertStats(result, nodesCreated = 1, propertiesWritten = 1)
   }
 
@@ -348,7 +349,7 @@ class LoadCsvAcceptanceTest
             writer.println("something")
     ).cypherEscape
 
-    val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
+    val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line CREATE (a {name: line[0]}) RETURN a.name")
     assertStats(result, nodesCreated = 1, propertiesWritten = 1)
   }
 
@@ -361,7 +362,7 @@ class LoadCsvAcceptanceTest
         writer.println("010-1015;MFG - Engineering HQ;")
     })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed, s"LOAD CSV WITH HEADERS FROM '$url' AS line FIELDTERMINATOR ';' RETURN *").toList
+      val result = executeWith(Configs.UpdateConf, s"LOAD CSV WITH HEADERS FROM '$url' AS line FIELDTERMINATOR ';' RETURN *").toList
       assert(result === List(
         Map("line" -> Map("DEPARTMENT ID" -> "010-1010", "DEPARTMENT NAME" -> "MFG Supplies",
           null.asInstanceOf[String] -> null)),
@@ -369,6 +370,27 @@ class LoadCsvAcceptanceTest
           null.asInstanceOf[String] -> null)),
         Map("line" -> Map("DEPARTMENT ID" -> "010-1015", "DEPARTMENT NAME" -> "MFG - Engineering HQ",
           null.asInstanceOf[String] -> null))
+      ))
+    }
+  }
+
+  test("should handle returning null keys") {
+    val urls = csvUrls({
+      writer =>
+        writer.println("DEPARTMENT ID;DEPARTMENT NAME;")
+        writer.println("010-1010;MFG Supplies;")
+        writer.println("010-1011;Corporate Procurement;")
+        writer.println("010-1015;MFG - Engineering HQ;")
+    })
+
+    for (url <- urls) {
+      //Using innerExecuteDeprecated because different versions has different ordering for keys
+      val result =  innerExecuteDeprecated(s"LOAD CSV WITH HEADERS FROM '$url' AS line FIELDTERMINATOR ';' RETURN keys(line)").toList
+
+      assert(result === List(
+        Map("keys(line)" -> List("DEPARTMENT NAME", null, "DEPARTMENT ID")),
+        Map("keys(line)" -> List("DEPARTMENT NAME", null, "DEPARTMENT ID")),
+        Map("keys(line)" -> List("DEPARTMENT NAME", null, "DEPARTMENT ID"))
       ))
     }
   }
@@ -382,7 +404,7 @@ class LoadCsvAcceptanceTest
     val url = s"http://127.0.0.1:$port/test.csv".cypherEscape
 
     //val result = executeScalarWithAllPlannersAndCompatibilityMode[Long](s"LOAD CSV FROM '$url' AS line RETURN count(line)")
-    val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line RETURN count(line)")
+    val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line RETURN count(line)")
     result.columnAs[Long]("count(line)").toList should equal(List(3))
   }
 
@@ -390,7 +412,7 @@ class LoadCsvAcceptanceTest
     val url = s"http://127.0.0.1:$port/redirect_test.csv".cypherEscape
 
 //    val result = executeScalarWithAllPlannersAndCompatibilityMode[Long](s"LOAD CSV FROM '$url' AS line RETURN count(line)")
-    val result = executeWith(expectedToSucceed, s"LOAD CSV FROM '$url' AS line RETURN count(line)")
+    val result = executeWith(Configs.UpdateConf, s"LOAD CSV FROM '$url' AS line RETURN count(line)")
     result.columnAs[Long]("count(line)").toList should equal(List(3))
   }
 
@@ -495,7 +517,7 @@ class LoadCsvAcceptanceTest
     try {
       intercept[QueryExecutionException] {
         db.execute(s"LOAD CSV FROM 'file:///../foo.csv' AS line RETURN line[0] AS field", emptyMap()).asScala.size
-      }.getMessage should endWith(" file URL points outside configured import directory")
+      }.getMessage should endWith(" file URL points outside configured import directory").or(include("Couldn't load the external resource at"))
     } finally {
       db.shutdown()
     }
@@ -566,7 +588,7 @@ class LoadCsvAcceptanceTest
     val second = url.substring(url.length / 2)
     createNode(Map("prop" -> second))
 
-    val result = executeWith(expectedToSucceed, s"MATCH (n) WITH n, '$first' as prefix  LOAD CSV FROM prefix + n.prop AS line CREATE (a {name: line[0]}) RETURN a.name")
+    val result = executeWith(Configs.UpdateConf, s"MATCH (n) WITH n, '$first' as prefix  LOAD CSV FROM prefix + n.prop AS line CREATE (a {name: line[0]}) RETURN a.name")
     assertStats(result, nodesCreated = 3, propertiesWritten = 3)
   }
 
@@ -581,7 +603,7 @@ class LoadCsvAcceptanceTest
                    |MERGE (c:City {data:data})
                    |RETURN count(*) as c""".stripMargin
 
-    val result = executeWith(expectedToSucceed, query)
+    val result = executeWith(Configs.UpdateConf, query)
     result.columnAs("c").toList should equal(List(0))
     result.close()
   }
@@ -589,11 +611,47 @@ class LoadCsvAcceptanceTest
   test("empty headers file should not throw") {
     val urls = csvUrls({ _ => {} })
     for (url <- urls) {
-      val result = executeWith(expectedToSucceed,
+      val result = executeWith(Configs.UpdateConf,
         s"LOAD CSV WITH HEADERS FROM '$url' AS line RETURN count(*)"
       )
 
       result.toList should equal(List(Map("count(*)" -> 0)))
+    }
+  }
+
+  test("should give nice error message when overflowing the buffer") {
+    runWithConfig(GraphDatabaseSettings.csv_buffer_size -> (1 * 1024 * 1024).toString) { db =>
+      val longName  = "f"* 6000000
+      val urls = csvUrls({
+        writer =>
+          writer.println("\"prop\"")
+          writer.println(longName)
+      })
+      for (url <- urls) {
+        //TODO this message should mention `dbms.import.csv.buffer_size` in 3.5
+        val error = intercept[QueryExecutionException](db.execute(
+          s"""LOAD CSV WITH HEADERS FROM '$url' AS row
+             |RETURN row.prop""".stripMargin).next().get("row.prop"))
+        error.getMessage should startWith(
+          """Tried to read a field larger than buffer size 1048576.""".stripMargin)
+      }
+    }
+  }
+
+  test("should be able to configure db to handle huge fields") {
+    runWithConfig(GraphDatabaseSettings.csv_buffer_size -> (4 * 1024 * 1024).toString) { db =>
+      val longName  = "f"* 6000000
+      val urls = csvUrls({
+        writer =>
+          writer.println("\"prop\"")
+          writer.println(longName)
+      })
+      for (url <- urls) {
+        val result = db.execute(
+          s"""LOAD CSV WITH HEADERS FROM '$url' AS row
+             |RETURN row.prop""".stripMargin)
+        result.next().get("row.prop") should equal(longName)
+      }
     }
   }
 

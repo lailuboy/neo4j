@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -37,6 +37,7 @@ import org.neo4j.io.pagecache.PageCache;
 import static java.lang.System.currentTimeMillis;
 import static org.junit.Assert.assertEquals;
 import static org.neo4j.unsafe.impl.batchimport.cache.NumberArrayFactory.HEAP;
+import static org.neo4j.unsafe.impl.batchimport.cache.NumberArrayFactory.NO_MONITOR;
 import static org.neo4j.unsafe.impl.batchimport.cache.NumberArrayFactory.OFF_HEAP;
 import static org.neo4j.unsafe.impl.batchimport.cache.NumberArrayFactory.auto;
 
@@ -46,7 +47,7 @@ public class LongArrayTest extends NumberArrayPageCacheTestSupport
     private static Fixture fixture;
 
     @Test
-    public void shouldHandleSomeRandomSetAndGet() throws Exception
+    public void shouldHandleSomeRandomSetAndGet()
     {
         // GIVEN
         int length = random.nextInt( 100_000 ) + 100;
@@ -81,7 +82,7 @@ public class LongArrayTest extends NumberArrayPageCacheTestSupport
     }
 
     @Test
-    public void shouldHandleMultipleCallsToClose() throws Exception
+    public void shouldHandleMultipleCallsToClose()
     {
         // GIVEN
         NumberArray<?> array = newArray( 10, -1 );
@@ -106,7 +107,7 @@ public class LongArrayTest extends NumberArrayPageCacheTestSupport
         fixture = prepareDirectoryAndPageCache( LongArrayTest.class );
         PageCache pageCache = fixture.pageCache;
         File dir = fixture.directory;
-        NumberArrayFactory autoWithPageCacheFallback = auto( pageCache, dir, true );
+        NumberArrayFactory autoWithPageCacheFallback = auto( pageCache, dir, true, NO_MONITOR );
         NumberArrayFactory pageCacheArrayFactory = new PageCachedNumberArrayFactory( pageCache, dir );
         return Arrays.asList( HEAP, OFF_HEAP, autoWithPageCacheFallback, pageCacheArrayFactory );
     }

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -22,14 +22,14 @@ package org.neo4j.cypher.internal.runtime.interpreted.pipes
 import org.neo4j.cypher.internal.runtime.interpreted.ExecutionContext
 import org.neo4j.cypher.internal.runtime.interpreted.commands.expressions.Expression
 import org.neo4j.cypher.internal.runtime.interpreted.ListSupport
-import org.neo4j.cypher.internal.v3_4.logical.plans.LogicalPlanId
+import org.neo4j.cypher.internal.util.v3_4.attribution.Id
 import org.neo4j.values.AnyValue
 
 import scala.annotation.tailrec
 import scala.collection.JavaConverters._
 
 case class UnwindPipe(source: Pipe, collection: Expression, variable: String)
-                     (val id: LogicalPlanId = LogicalPlanId.DEFAULT)
+                     (val id: Id = Id.INVALID_ID)
   extends PipeWithSource(source) with ListSupport {
 
   collection.registerOwningPipe(this)

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -27,9 +27,6 @@ import java.util.function.Supplier;
 
 import org.neo4j.concurrent.AsyncApply;
 import org.neo4j.concurrent.WorkSync;
-import org.neo4j.kernel.api.exceptions.index.IndexActivationFailedKernelException;
-import org.neo4j.kernel.api.exceptions.index.IndexNotFoundKernelException;
-import org.neo4j.kernel.api.exceptions.index.IndexPopulationFailedKernelException;
 import org.neo4j.kernel.api.labelscan.LabelScanWriter;
 import org.neo4j.kernel.api.labelscan.NodeLabelUpdate;
 import org.neo4j.kernel.impl.api.BatchTransactionApplier;
@@ -46,6 +43,7 @@ import org.neo4j.kernel.impl.transaction.command.Command.PropertyCommand;
 import org.neo4j.kernel.impl.transaction.state.IndexUpdates;
 import org.neo4j.kernel.impl.transaction.state.OnlineIndexUpdates;
 import org.neo4j.storageengine.api.CommandsToApply;
+
 import static org.neo4j.kernel.impl.store.NodeLabelsField.parseLabelsField;
 
 /**
@@ -58,27 +56,29 @@ public class IndexBatchTransactionApplier extends BatchTransactionApplier.Adapte
     private final WorkSync<Supplier<LabelScanWriter>,LabelUpdateWork> labelScanStoreSync;
     private final WorkSync<IndexingUpdateService,IndexUpdatesWork> indexUpdatesSync;
     private final SingleTransactionApplier transactionApplier;
+    private final IndexActivator indexActivator;
     private final PropertyPhysicalToLogicalConverter indexUpdateConverter;
 
     private List<NodeLabelUpdate> labelUpdates;
     private IndexUpdates indexUpdates;
+    private long txId;
 
-    public IndexBatchTransactionApplier( IndexingService indexingService,
-            WorkSync<Supplier<LabelScanWriter>,LabelUpdateWork> labelScanStoreSync,
-            WorkSync<IndexingUpdateService,IndexUpdatesWork> indexUpdatesSync,
-            NodeStore nodeStore,
-            PropertyPhysicalToLogicalConverter indexUpdateConverter )
+    public IndexBatchTransactionApplier( IndexingService indexingService, WorkSync<Supplier<LabelScanWriter>,LabelUpdateWork> labelScanStoreSync,
+            WorkSync<IndexingUpdateService,IndexUpdatesWork> indexUpdatesSync, NodeStore nodeStore, PropertyPhysicalToLogicalConverter indexUpdateConverter,
+            IndexActivator indexActivator )
     {
         this.indexingService = indexingService;
         this.labelScanStoreSync = labelScanStoreSync;
         this.indexUpdatesSync = indexUpdatesSync;
         this.indexUpdateConverter = indexUpdateConverter;
         this.transactionApplier = new SingleTransactionApplier( nodeStore );
+        this.indexActivator = indexActivator;
     }
 
     @Override
     public TransactionApplier startTx( CommandsToApply transaction )
     {
+        txId = transaction.transactionId();
         return transactionApplier;
     }
 
@@ -170,7 +170,7 @@ public class IndexBatchTransactionApplier extends BatchTransactionApplier.Adapte
         }
 
         @Override
-        public boolean visitNodeCommand( Command.NodeCommand command ) throws IOException
+        public boolean visitNodeCommand( Command.NodeCommand command )
         {
             // for label store updates
             NodeRecord before = command.getBefore();
@@ -189,7 +189,7 @@ public class IndexBatchTransactionApplier extends BatchTransactionApplier.Adapte
                     {
                         labelUpdates = new ArrayList<>();
                     }
-                    labelUpdates.add( NodeLabelUpdate.labelChanges( command.getKey(), labelsBefore, labelsAfter ) );
+                    labelUpdates.add( NodeLabelUpdate.labelChanges( command.getKey(), labelsBefore, labelsAfter, txId ) );
                 }
             }
 
@@ -198,7 +198,7 @@ public class IndexBatchTransactionApplier extends BatchTransactionApplier.Adapte
         }
 
         @Override
-        public boolean visitPropertyCommand( PropertyCommand command ) throws IOException
+        public boolean visitPropertyCommand( PropertyCommand command )
         {
             return indexUpdatesExtractor.visitPropertyCommand( command );
         }
@@ -224,16 +224,10 @@ public class IndexBatchTransactionApplier extends BatchTransactionApplier.Adapte
                     // right now we just assume that an update to index records means wait for it to be online.
                     if ( ((IndexRule) command.getSchemaRule()).canSupportUniqueConstraint() )
                     {
-                        try
-                        {
-                            indexingService.activateIndex( command.getSchemaRule().getId() );
-                        }
-                        catch ( IndexNotFoundKernelException | IndexActivationFailedKernelException |
-                                IndexPopulationFailedKernelException e )
-                        {
-                            throw new IllegalStateException(
-                                    "Unable to enable constraint, backing index is not online.", e );
-                        }
+                        // Register activations into the IndexActivator instead of IndexingService to avoid deadlock
+                        // that could insue for applying batches of transactions where a previous transaction in the same
+                        // batch acquires a low-level commit lock that prevents the very same index population to complete.
+                        indexActivator.activateIndex( command.getSchemaRule().getId() );
                     }
                     break;
                 case CREATE:
@@ -243,6 +237,7 @@ public class IndexBatchTransactionApplier extends BatchTransactionApplier.Adapte
                     break;
                 case DELETE:
                     indexingService.dropIndex( (IndexRule) command.getSchemaRule() );
+                    indexActivator.indexDropped( command.getSchemaRule().getId() );
                     break;
                 default:
                     throw new IllegalStateException( command.getMode().name() );

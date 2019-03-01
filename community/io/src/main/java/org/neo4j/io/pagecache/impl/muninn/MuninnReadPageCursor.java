@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -23,17 +23,16 @@ import java.io.IOException;
 
 import org.neo4j.io.pagecache.PageSwapper;
 import org.neo4j.io.pagecache.tracing.cursor.PageCursorTracer;
+import org.neo4j.io.pagecache.tracing.cursor.context.VersionContextSupplier;
 
 final class MuninnReadPageCursor extends MuninnPageCursor
 {
-    private final CursorPool.CursorSets cursorSets;
     private long lockStamp;
-    MuninnReadPageCursor nextCursor;
 
-    MuninnReadPageCursor( CursorPool.CursorSets cursorSets, long victimPage, PageCursorTracer pageCursorTracer )
+    MuninnReadPageCursor( long victimPage, PageCursorTracer pageCursorTracer,
+            VersionContextSupplier versionContextSupplier )
     {
-        super( victimPage, pageCursorTracer );
-        this.cursorSets = cursorSets;
+        super( victimPage, pageCursorTracer, versionContextSupplier );
     }
 
     @Override
@@ -44,7 +43,7 @@ final class MuninnReadPageCursor extends MuninnPageCursor
             pinEvent.done();
         }
         lockStamp = 0; // make sure not to accidentally keep a lock state around
-        clearPageState();
+        clearPageCursorState();
     }
 
     @Override
@@ -56,9 +55,10 @@ final class MuninnReadPageCursor extends MuninnPageCursor
         {
             return false;
         }
-        pin( nextPageId, false );
         currentPageId = nextPageId;
         nextPageId++;
+        pin( currentPageId, false );
+        verifyContext();
         return true;
     }
 
@@ -85,13 +85,6 @@ final class MuninnReadPageCursor extends MuninnPageCursor
     protected void convertPageFaultLock( long pageRef )
     {
         lockStamp = pagedFile.unlockExclusive( pageRef );
-    }
-
-    @Override
-    protected void releaseCursor()
-    {
-        nextCursor = cursorSets.readCursors;
-        cursorSets.readCursors = this;
     }
 
     @Override
@@ -148,7 +141,7 @@ final class MuninnReadPageCursor extends MuninnPageCursor
             // First, forget about this page in case pin() throws and the cursor
             // is closed; we don't want unpinCurrentPage() to try unlocking
             // this page.
-            pinnedPageRef = 0;
+            clearPageReference();
             // Then try pin again.
             pin( currentPageId, false );
         }
@@ -180,6 +173,12 @@ final class MuninnReadPageCursor extends MuninnPageCursor
 
     @Override
     public void putShort( short value )
+    {
+        throw new IllegalStateException( "Cannot write to read-locked page" );
+    }
+
+    @Override
+    public void shiftBytes( int sourceStart, int length, int shift )
     {
         throw new IllegalStateException( "Cannot write to read-locked page" );
     }

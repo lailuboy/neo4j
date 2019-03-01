@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -25,9 +25,10 @@ import java.util
 import org.neo4j.cypher.internal.util.v3_4.LoadExternalResourceException
 import org.neo4j.cypher.internal.runtime.interpreted.ExecutionContext
 import org.neo4j.cypher.internal.runtime.interpreted.commands.expressions.Expression
-import org.neo4j.cypher.internal.v3_4.logical.plans.LogicalPlanId
 import org.neo4j.cypher.internal.ir.v3_4.{CSVFormat, HasHeaders, NoHeaders}
 import org.neo4j.cypher.internal.runtime.{ArrayBackedMap, QueryContext}
+import org.neo4j.cypher.internal.util.v3_4.attribution.Id
+
 import org.neo4j.values._
 import org.neo4j.values.storable.{TextValue, Value, Values}
 import org.neo4j.values.virtual.VirtualValues
@@ -39,8 +40,9 @@ case class LoadCSVPipe(source: Pipe,
                        urlExpression: Expression,
                        variable: String,
                        fieldTerminator: Option[String],
-                       legacyCsvQuoteEscaping: Boolean)
-                      (val id: LogicalPlanId = LogicalPlanId.DEFAULT)
+                       legacyCsvQuoteEscaping: Boolean,
+                        bufferSize: Int)
+                      (val id: Id = Id.INVALID_ID)
   extends PipeWithSource(source) {
 
   urlExpression.registerOwningPipe(this)
@@ -110,13 +112,15 @@ case class LoadCSVPipe(source: Pipe,
       val urlString: TextValue = urlExpression(context, state).asInstanceOf[TextValue]
       val url = getImportURL(urlString.stringValue(), state.query)
 
-      val iterator: Iterator[Array[Value]] = state.resources.getCsvIterator(url, fieldTerminator, legacyCsvQuoteEscaping)
-        .map(_.map(s => Values.stringOrNoValue(s)))
       format match {
         case HasHeaders =>
+          val iterator: Iterator[Array[Value]] = state.resources.getCsvIterator(url, fieldTerminator, legacyCsvQuoteEscaping, bufferSize, headers = true)
+            .map(_.map(s => Values.stringOrNoValue(s)))
           val headers = if (iterator.nonEmpty) iterator.next().toIndexedSeq else IndexedSeq.empty // First row is headers
           new IteratorWithHeaders(headers, context, iterator)
         case NoHeaders =>
+          val iterator: Iterator[Array[Value]] = state.resources.getCsvIterator(url, fieldTerminator, legacyCsvQuoteEscaping, bufferSize, headers = false)
+            .map(_.map(s => Values.stringOrNoValue(s)))
           new IteratorWithoutHeaders(context, iterator)
       }
     })

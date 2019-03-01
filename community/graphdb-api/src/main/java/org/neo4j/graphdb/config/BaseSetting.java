@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -17,7 +17,6 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-
 package org.neo4j.graphdb.config;
 
 import java.util.Optional;
@@ -32,6 +31,7 @@ public abstract class BaseSetting<T> implements Setting<T>
     private boolean deprecated;
     private String replacement;
     private boolean internal;
+    private boolean secret;
     private boolean dynamic;
     private String documentedDefaultValue;
     private String description;
@@ -67,6 +67,17 @@ public abstract class BaseSetting<T> implements Setting<T>
     public void setInternal( final boolean val )
     {
         this.internal = val;
+    }
+
+    @Override
+    public boolean secret()
+    {
+        return this.secret;
+    }
+
+    public void setSecret( final boolean val )
+    {
+        this.secret = val;
     }
 
     @Override

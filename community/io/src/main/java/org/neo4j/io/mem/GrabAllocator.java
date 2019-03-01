@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,9 +19,12 @@
  */
 package org.neo4j.io.mem;
 
+import org.neo4j.memory.MemoryAllocationTracker;
+import org.neo4j.unsafe.impl.internal.dragons.NativeMemoryAllocationRefusedError;
 import org.neo4j.unsafe.impl.internal.dragons.UnsafeUtil;
 
-import static org.neo4j.unsafe.impl.internal.dragons.FeatureToggles.getInteger;
+import static org.neo4j.io.ByteUnit.kibiBytes;
+import static org.neo4j.util.FeatureToggles.getInteger;
 
 /**
  * This memory allocator is allocating memory in large segments, called "grabs", and the memory returned by the memory
@@ -32,12 +35,13 @@ public final class GrabAllocator implements MemoryAllocator
     /**
      * The amount of memory, in bytes, to grab in each Grab.
      */
-    private static final long GRAB_SIZE = getInteger( GrabAllocator.class, "GRAB_SIZE", 512 * 1024 ); // 512 KiB
+    private static final long GRAB_SIZE = getInteger( GrabAllocator.class, "GRAB_SIZE", (int) kibiBytes( 512 ) );
 
     /**
      * The amount of memory that this memory manager can still allocate.
      */
     private long memoryReserve;
+    private final MemoryAllocationTracker memoryTracker;
 
     private Grab grabs;
 
@@ -46,10 +50,12 @@ public final class GrabAllocator implements MemoryAllocator
      * given alignment size.
      * @param expectedMaxMemory The maximum amount of memory that this memory manager is expected to allocate. The
      * actual amount of memory used can end up greater than this value, if some of it gets wasted on alignment padding.
+     * @param memoryTracker memory usage tracker
      */
-    GrabAllocator( long expectedMaxMemory )
+    GrabAllocator( long expectedMaxMemory, MemoryAllocationTracker memoryTracker )
     {
         this.memoryReserve = expectedMaxMemory;
+        this.memoryTracker = memoryTracker;
     }
 
     @Override
@@ -82,17 +88,20 @@ public final class GrabAllocator implements MemoryAllocator
     {
         if ( alignment <= 0 )
         {
-            throw new IllegalArgumentException( "Invalid alignment: " + alignment + "; alignment must be positive" );
+            throw new IllegalArgumentException( "Invalid alignment: " + alignment + ". Alignment must be positive." );
         }
+        long grabSize = Math.min( GRAB_SIZE, memoryReserve );
         if ( bytes > GRAB_SIZE )
         {
             // This is a huge allocation. Put it in its own grab and keep any existing grab at the head.
+            grabSize = bytes;
             Grab nextGrab = grabs == null ? null : grabs.next;
-            Grab allocationGrab = new Grab( nextGrab, bytes );
-            if ( !allocationGrab.canAllocate( bytes ) )
+            Grab allocationGrab = new Grab( nextGrab, grabSize, memoryTracker );
+            if ( !allocationGrab.canAllocate( bytes, alignment ) )
             {
                 allocationGrab.free();
-                allocationGrab = new Grab( nextGrab, bytes + alignment );
+                grabSize = bytes + alignment;
+                allocationGrab = new Grab( nextGrab, grabSize, memoryTracker );
             }
             long allocation = allocationGrab.allocate( bytes, alignment );
             grabs = grabs == null ? allocationGrab : grabs.setNext( allocationGrab );
@@ -100,24 +109,23 @@ public final class GrabAllocator implements MemoryAllocator
             return allocation;
         }
 
-        if ( grabs == null || !grabs.canAllocate( bytes ) )
+        if ( grabs == null || !grabs.canAllocate( bytes, alignment ) )
         {
-            long desiredGrabSize = Math.min( GRAB_SIZE, memoryReserve );
-            if ( desiredGrabSize < bytes )
+            if ( grabSize < bytes )
             {
-                desiredGrabSize = bytes;
-                Grab grab = new Grab( grabs, desiredGrabSize );
-                if ( grab.canAllocate( bytes ) )
+                grabSize = bytes;
+                Grab grab = new Grab( grabs, grabSize, memoryTracker );
+                if ( grab.canAllocate( bytes, alignment ) )
                 {
-                    memoryReserve -= desiredGrabSize;
+                    memoryReserve -= grabSize;
                     grabs = grab;
                     return grabs.allocate( bytes, alignment );
                 }
                 grab.free();
-                desiredGrabSize = bytes + alignment;
+                grabSize = bytes + alignment;
             }
-            memoryReserve -= desiredGrabSize;
-            grabs = new Grab( grabs, desiredGrabSize );
+            grabs = new Grab( grabs, grabSize, memoryTracker );
+            memoryReserve -= grabSize;
         }
         return grabs.allocate( bytes, alignment );
     }
@@ -135,70 +143,44 @@ public final class GrabAllocator implements MemoryAllocator
         }
     }
 
-    private static long allocateNativeMemory( long size )
-    {
-        try
-        {
-            return UnsafeUtil.allocateMemory( size );
-        }
-        catch ( OutOfMemoryError e )
-        {
-            NativeMemoryAllocationRefusedError error = new NativeMemoryAllocationRefusedError( size );
-            try
-            {
-                error.initCause( e );
-            }
-            catch ( Throwable ignore )
-            {
-                // This can only happen if our NMARE somehow already has a cause initialised, which should not
-                // be the case, but it could if the JDK decided to inject a default cause in some future version.
-                // To avoid loosing the ability to trace this cause back, we'll add it as a suppressed exception
-                // instead.
-                try
-                {
-                    error.addSuppressed( e );
-                }
-                catch ( Throwable ignore2 )
-                {
-                    // Okay, we tried.
-                }
-            }
-            throw error;
-        }
-    }
-
     private static class Grab
     {
         public final Grab next;
         private final long address;
         private final long limit;
+        private final MemoryAllocationTracker memoryTracker;
         private long nextPointer;
 
-        Grab( Grab next, long size )
+        Grab( Grab next, long size, MemoryAllocationTracker memoryTracker )
         {
             this.next = next;
-            this.address = allocateNativeMemory( size );
+            this.address = UnsafeUtil.allocateMemory( size, memoryTracker );
             this.limit = address + size;
-
+            this.memoryTracker = memoryTracker;
             nextPointer = address;
         }
 
-        Grab( Grab next, long address, long limit, long nextPointer )
+        Grab( Grab next, long address, long limit, long nextPointer, MemoryAllocationTracker memoryTracker )
         {
             this.next = next;
             this.address = address;
             this.limit = limit;
             this.nextPointer = nextPointer;
+            this.memoryTracker = memoryTracker;
         }
 
         private long nextAligned( long pointer, long alignment )
         {
-            long mask = alignment - 1;
-            if ( (pointer & ~mask) == pointer )
+            if ( alignment == 1 )
             {
                 return pointer;
             }
-            return (pointer + mask) & ~mask;
+            long off = pointer % alignment;
+            if ( off == 0 )
+            {
+                return pointer;
+            }
+            return pointer + (alignment - off);
         }
 
         long allocate( long bytes, long alignment )
@@ -210,17 +192,17 @@ public final class GrabAllocator implements MemoryAllocator
 
         void free()
         {
-            UnsafeUtil.free( address );
+            UnsafeUtil.free( address, limit - address, memoryTracker );
         }
 
-        boolean canAllocate( long bytes )
+        boolean canAllocate( long bytes, long alignment )
         {
-            return nextPointer + bytes <= limit;
+            return nextAligned( nextPointer, alignment ) + bytes <= limit;
         }
 
         Grab setNext( Grab grab )
         {
-            return new Grab( grab, address, limit, nextPointer );
+            return new Grab( grab, address, limit, nextPointer, memoryTracker );
         }
 
         @Override

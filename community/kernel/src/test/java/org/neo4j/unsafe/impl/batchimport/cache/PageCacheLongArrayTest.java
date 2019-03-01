@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -61,11 +61,11 @@ public class PageCacheLongArrayTest
     }
 
     @Test
-    public void verifyChunkingArrayWithPageCacheLongArray() throws Exception
+    public void verifyChunkingArrayWithPageCacheLongArray()
     {
         PageCache pageCache = pageCacheRule.getPageCache( fs );
         File directory = dir.directory();
-        NumberArrayFactory numberArrayFactory = NumberArrayFactory.auto( pageCache, directory, false );
+        NumberArrayFactory numberArrayFactory = NumberArrayFactory.auto( pageCache, directory, false, NumberArrayFactory.NO_MONITOR );
         try ( LongArray array = numberArrayFactory.newDynamicLongArray( COUNT / 1_000, 0 ) )
         {
             verifyBehaviour( array );

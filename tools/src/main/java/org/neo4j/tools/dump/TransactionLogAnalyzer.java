@@ -1,21 +1,24 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
- * This file is part of Neo4j.
- *
- * Neo4j is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
+ * This file is part of Neo4j Enterprise Edition. The included source
+ * code can be redistributed and/or modified under the terms of the
+ * GNU AFFERO GENERAL PUBLIC LICENSE Version 3
+ * (http://www.fsf.org/licensing/licenses/agpl-3.0.html) with the
+ * Commons Clause, as found in the associated LICENSE.txt file.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU Affero General Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Neo4j object code can be licensed independently from the source
+ * under separate terms from the AGPL. Inquiries can be directed to:
+ * licensing@neo4j.com
+ *
+ * More information is also available at:
+ * https://neo4j.com/licensing/
  */
 package org.neo4j.tools.dump;
 
@@ -44,6 +47,7 @@ import org.neo4j.kernel.impl.transaction.log.files.LogFiles;
 import org.neo4j.kernel.impl.transaction.log.files.LogFilesBuilder;
 import org.neo4j.tools.dump.log.TransactionLogEntryCursor;
 
+import static java.lang.String.format;
 import static org.neo4j.kernel.impl.transaction.log.LogVersionBridge.NO_MORE_CHANNELS;
 import static org.neo4j.kernel.impl.transaction.log.entry.LogEntryByteCodes.CHECK_POINT;
 import static org.neo4j.tools.util.TransactionLogUtils.openVersionedChannel;
@@ -68,6 +72,10 @@ public class TransactionLogAnalyzer
          */
         default void logFile( File file, long logVersion ) throws IOException
         {   // no-op by default
+        }
+
+        default void endLogFile()
+        {
         }
 
         /**
@@ -129,12 +137,17 @@ public class TransactionLogAnalyzer
                     LogVersionedStoreChannel next = super.next( channel );
                     if ( next != channel )
                     {
+                        monitor.endLogFile();
                         monitor.logFile( logFiles.getLogFileForVersion( next.getVersion() ), next.getVersion() );
                     }
                     return next;
                 }
             };
             long lowestLogVersion = logFiles.getLowestLogVersion();
+            if ( lowestLogVersion < 0 )
+            {
+                throw new IllegalStateException( format( "Transaction logs at '%s' not found.", storeDirOrLogFile ) );
+            }
             firstFile = logFiles.getLogFileForVersion( lowestLogVersion );
             monitor.logFile( firstFile, lowestLogVersion );
         }
@@ -167,6 +180,7 @@ public class TransactionLogAnalyzer
                 }
             }
         }
+        monitor.endLogFile();
     }
 
     private static class CombinedMonitor implements Monitor

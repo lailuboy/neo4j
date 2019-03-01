@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -24,15 +24,14 @@ import java.time.Clock;
 import java.util.Map;
 import java.util.Set;
 
-import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.graphdb.security.AuthorizationViolationException;
+import org.neo4j.internal.kernel.api.security.AuthSubject;
+import org.neo4j.internal.kernel.api.security.AuthenticationResult;
+import org.neo4j.internal.kernel.api.security.LoginContext;
 import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
 import org.neo4j.kernel.api.security.AuthManager;
-import org.neo4j.internal.kernel.api.security.AuthSubject;
 import org.neo4j.kernel.api.security.AuthToken;
-import org.neo4j.internal.kernel.api.security.AuthenticationResult;
 import org.neo4j.kernel.api.security.PasswordPolicy;
-import org.neo4j.internal.kernel.api.security.SecurityContext;
 import org.neo4j.kernel.api.security.UserManager;
 import org.neo4j.kernel.api.security.UserManagerSupplier;
 import org.neo4j.kernel.api.security.exception.InvalidAuthTokenException;
@@ -116,7 +115,7 @@ public class BasicAuthManager implements AuthManager, UserManager, UserManagerSu
     }
 
     @Override
-    public BasicSecurityContext login( Map<String,Object> authToken ) throws InvalidAuthTokenException
+    public LoginContext login( Map<String,Object> authToken ) throws InvalidAuthTokenException
     {
         assertValidScheme( authToken );
 
@@ -133,7 +132,7 @@ public class BasicAuthManager implements AuthManager, UserManager, UserManagerSu
                 result = AuthenticationResult.PASSWORD_CHANGE_REQUIRED;
             }
         }
-        return new BasicSecurityContext( this, user, result );
+        return new BasicLoginContext( user, result );
     }
 
     @Override
@@ -224,7 +223,7 @@ public class BasicAuthManager implements AuthManager, UserManager, UserManagerSu
     }
 
     @Override
-    public UserManager getUserManager( SecurityContext securityContext )
+    public UserManager getUserManager( AuthSubject authSubject, boolean isUserManager )
     {
         return this;
     }
@@ -250,7 +249,6 @@ public class BasicAuthManager implements AuthManager, UserManager, UserManagerSu
 
     private static AuthenticationStrategy createAuthenticationStrategy( Clock clock, Config config )
     {
-        int maxFailedAttempts = config.get( GraphDatabaseSettings.auth_max_failed_attempts );
-        return new RateLimitedAuthenticationStrategy( clock, maxFailedAttempts );
+        return new RateLimitedAuthenticationStrategy( clock, config );
     }
 }

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,7 +19,7 @@
  */
 package org.neo4j.unsafe.impl.batchimport;
 
-import org.neo4j.kernel.api.ReadOperations;
+import org.neo4j.kernel.api.StatementConstants;
 import org.neo4j.kernel.impl.api.CountsAccessor;
 import org.neo4j.kernel.impl.store.record.RelationshipRecord;
 import org.neo4j.unsafe.impl.batchimport.cache.LongArray;
@@ -66,12 +66,23 @@ public class RelationshipCountsProcessor implements RecordProcessor<Relationship
         this.wildcardCounts = cacheFactory.newLongArray( anyRelationshipType + 1, 0 );
     }
 
-    public void process( long startNode, int type, long endNode )
+    static long calculateMemoryUsage( int highLabelId, int highRelationshipTypeId )
+    {
+        int labels = highLabelId + 1;
+        int types = highRelationshipTypeId + 1;
+        long labelsCountsUsage = labels * types * SIDES * Long.BYTES;
+        long wildcardCountsUsage = types * Long.BYTES;
+        return labelsCountsUsage + wildcardCountsUsage;
+    }
+
+    @Override
+    public boolean process( RelationshipRecord record )
     {
         // Below is logic duplication of CountsState#addRelationship
+        int type = record.getType();
         increment( wildcardCounts, anyRelationshipType );
         increment( wildcardCounts, type );
-        startScratch = nodeLabelCache.get( client, startNode, startScratch );
+        startScratch = nodeLabelCache.get( client, record.getFirstNode(), startScratch );
         for ( int startNodeLabelId : startScratch )
         {
             if ( startNodeLabelId == -1 )
@@ -82,7 +93,7 @@ public class RelationshipCountsProcessor implements RecordProcessor<Relationship
             increment( labelsCounts, startNodeLabelId, anyRelationshipType, START );
             increment( labelsCounts, startNodeLabelId, type, START );
         }
-        endScratch = nodeLabelCache.get( client, endNode, endScratch );
+        endScratch = nodeLabelCache.get( client, record.getSecondNode(), endScratch );
         for ( int endNodeLabelId : endScratch )
         {
             if ( endNodeLabelId == -1 )
@@ -93,13 +104,6 @@ public class RelationshipCountsProcessor implements RecordProcessor<Relationship
             increment( labelsCounts, endNodeLabelId, anyRelationshipType, END );
             increment( labelsCounts, endNodeLabelId, type, END );
         }
-    }
-
-    @Override
-    public boolean process( RelationshipRecord record )
-    {
-        process( record.getFirstNode(), record.getType(), record.getSecondNode() );
-        // No need to update the store, we're just reading things here
         return false;
     }
 
@@ -108,10 +112,10 @@ public class RelationshipCountsProcessor implements RecordProcessor<Relationship
     {
         for ( int wildcardType = 0; wildcardType <= anyRelationshipType; wildcardType++ )
         {
-            int type = wildcardType == anyRelationshipType ? ReadOperations.ANY_RELATIONSHIP_TYPE : wildcardType;
+            int type = wildcardType == anyRelationshipType ? StatementConstants.ANY_RELATIONSHIP_TYPE : wildcardType;
             long count = wildcardCounts.get( wildcardType );
             countsUpdater.incrementRelationshipCount(
-                    ReadOperations.ANY_LABEL, type, ReadOperations.ANY_LABEL, count );
+                    StatementConstants.ANY_LABEL, type, StatementConstants.ANY_LABEL, count );
         }
 
         for ( int labelId = 0; labelId < anyLabel; labelId++ )
@@ -121,12 +125,19 @@ public class RelationshipCountsProcessor implements RecordProcessor<Relationship
 
                 long startCount = labelsCounts.get( arrayIndex( labelId, typeId, START ) );
                 long endCount = labelsCounts.get( arrayIndex( labelId, typeId, END ) );
-                int type = typeId == anyRelationshipType ? ReadOperations.ANY_RELATIONSHIP_TYPE : typeId;
+                int type = typeId == anyRelationshipType ? StatementConstants.ANY_RELATIONSHIP_TYPE : typeId;
 
-                countsUpdater.incrementRelationshipCount( labelId, type, ReadOperations.ANY_LABEL, startCount );
-                countsUpdater.incrementRelationshipCount( ReadOperations.ANY_LABEL, type, labelId, endCount );
+                countsUpdater.incrementRelationshipCount( labelId, type, StatementConstants.ANY_LABEL, startCount );
+                countsUpdater.incrementRelationshipCount( StatementConstants.ANY_LABEL, type, labelId, endCount );
             }
         }
+    }
+
+    @Override
+    public void close()
+    {
+        labelsCounts.close();
+        wildcardCounts.close();
     }
 
     public void addCountsFrom( RelationshipCountsProcessor from )

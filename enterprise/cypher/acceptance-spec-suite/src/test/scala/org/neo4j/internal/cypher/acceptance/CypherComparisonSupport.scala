@@ -1,21 +1,24 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
- * This file is part of Neo4j.
- *
- * Neo4j is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
+ * This file is part of Neo4j Enterprise Edition. The included source
+ * code can be redistributed and/or modified under the terms of the
+ * GNU AFFERO GENERAL PUBLIC LICENSE Version 3
+ * (http://www.fsf.org/licensing/licenses/agpl-3.0.html) with the
+ * Commons Clause, as found in the associated LICENSE.txt file.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU Affero General Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Neo4j object code can be licensed independently from the source
+ * under separate terms from the AGPL. Inquiries can be directed to:
+ * licensing@neo4j.com
+ *
+ * More information is also available at:
+ * https://neo4j.com/licensing/
  */
 package org.neo4j.internal.cypher.acceptance
 
@@ -24,10 +27,9 @@ import org.neo4j.cypher.internal.RewindableExecutionResult
 import org.neo4j.cypher.internal.compatibility.v3_4.runtime.executionplan.NewRuntimeSuccessRateMonitor
 import org.neo4j.cypher.internal.compiler.v3_1.{CartesianPoint => CartesianPointv3_1, GeographicPoint => GeographicPointv3_1}
 import org.neo4j.cypher.internal.compiler.v3_4.planner.CantCompileQueryException
-import org.neo4j.cypher.internal.javacompat.GraphDatabaseCypherService
-import org.neo4j.cypher.internal.runtime.planDescription.InternalPlanDescription
-import org.neo4j.cypher.internal.runtime.planDescription.InternalPlanDescription.Arguments.{Planner => IPDPlanner, Runtime => IPDRuntime, RuntimeVersion => IPDRuntimeVersion, PlannerVersion => IPDPlannerVersion}
 import org.neo4j.cypher.internal.runtime.InternalExecutionResult
+import org.neo4j.cypher.internal.runtime.planDescription.InternalPlanDescription
+import org.neo4j.cypher.internal.runtime.planDescription.InternalPlanDescription.Arguments.{Planner => IPDPlanner, PlannerVersion => IPDPlannerVersion, Runtime => IPDRuntime, RuntimeVersion => IPDRuntimeVersion}
 import org.neo4j.cypher.internal.util.v3_4.Eagerly
 import org.neo4j.cypher.internal.util.v3_4.test_helpers.CypherTestSupport
 import org.neo4j.cypher.internal.v3_4.logical.plans.LogicalPlan
@@ -36,12 +38,12 @@ import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.factory.GraphDatabaseSettings
 import org.neo4j.helpers.Exceptions
 import org.neo4j.internal.cypher.acceptance.NewRuntimeMonitor.{NewPlanSeen, NewRuntimeMonitorCall, UnableToCompileQuery}
-import org.neo4j.test.TestEnterpriseGraphDatabaseFactory
+import org.neo4j.test.{TestEnterpriseGraphDatabaseFactory, TestGraphDatabaseFactory}
 import org.neo4j.values.storable.{CoordinateReferenceSystem, Values}
+import org.neo4j.test.TestEnterpriseGraphDatabaseFactory
 import org.scalatest.Assertions
 import org.scalatest.matchers.{MatchResult, Matcher}
 
-import scala.collection.JavaConverters._
 import scala.util.{Failure, Success, Try}
 
 trait CypherComparisonSupport extends CypherTestSupport {
@@ -53,9 +55,7 @@ trait CypherComparisonSupport extends CypherTestSupport {
     Map(GraphDatabaseSettings.cypher_hints_error -> "true")
   }
 
-  override protected def createGraphDatabase(config: collection.Map[Setting[_], String] = databaseConfig()): GraphDatabaseCypherService = {
-    new GraphDatabaseCypherService(new TestEnterpriseGraphDatabaseFactory().newImpermanentDatabase(config.asJava))
-  }
+  override protected def createDatabaseFactory(): TestGraphDatabaseFactory = new TestEnterpriseGraphDatabaseFactory()
 
   /**
     * Get rid of Arrays and java.util.Map to make it easier to compare results by equality.
@@ -98,44 +98,45 @@ trait CypherComparisonSupport extends CypherTestSupport {
     self.kernelMonitors.addMonitorListener(newRuntimeMonitor)
   }
 
-  protected def failWithError(expectedSpecificFailureFrom: TestConfiguration, query: String, message: Seq[String], params: (String, Any)*):
-  Unit = {
-    // Never consider Morsel even if test requests it
-    val expectedSpecificFailureFromEffective = expectedSpecificFailureFrom - Configs.Morsel
-
-    val explicitlyRequestedExperimentalScenarios = expectedSpecificFailureFromEffective.scenarios intersect Configs.Experimental.scenarios
+  protected def failWithError(expectedSpecificFailureFrom: TestConfiguration,
+                              query: String,
+                              message: Seq[String] = Seq.empty,
+                              errorType: Seq[String] = Seq.empty,
+                              params: Map[String, Any] = Map.empty): Unit = {
+    val explicitlyRequestedExperimentalScenarios = expectedSpecificFailureFrom.scenarios intersect Configs.Experimental.scenarios
     val scenariosToExecute = Configs.AbsolutelyAll.scenarios ++ explicitlyRequestedExperimentalScenarios
     for (thisScenario <- scenariosToExecute) {
       thisScenario.prepare()
-      val expectedToFailWithSpecificMessage = expectedSpecificFailureFromEffective.containsScenario(thisScenario)
+      val expectedToFailWithSpecificMessage = expectedSpecificFailureFrom.containsScenario(thisScenario)
 
-      val tryResult: Try[InternalExecutionResult] = Try(innerExecute(s"CYPHER ${thisScenario.preparserOptions} $query", params.toMap))
+      val tryResult: Try[InternalExecutionResult] = Try(innerExecute(s"CYPHER ${thisScenario.preparserOptions} $query", params))
       tryResult match {
         case (Success(_)) =>
           if (expectedToFailWithSpecificMessage) {
             fail("Unexpectedly Succeeded in " + thisScenario.name)
           }
         // It was not expected to fail with the specified error message, do nothing
-        case Failure(e: CypherException) =>
+        case Failure(e: Throwable) =>  {
+          val actualErrorType = e.toString
           if (expectedToFailWithSpecificMessage) {
-            if (e.getMessage == null || !message.exists(e.getMessage.contains(_))) {
-              fail("Correctly failed in " + thisScenario.name + " but instead of one of the given messages, the error message was '" + e.getMessage + "'")
+            if (!correctError(actualErrorType, errorType)) {
+              fail("Correctly failed in " + thisScenario.name + " but instead of one the given error types, the error was '" + actualErrorType + "'", e)
+            }
+            if (!correctError(e.getMessage, message)) {
+              fail("Correctly failed in " + thisScenario.name + " but instead of one of the given messages, the error message was '" + e.getMessage + "'", e)
             }
           } else {
-            if (message.exists(e.getMessage.contains(_))) {
-              fail("Unexpectedly (but correctly!) failed in " + thisScenario.name + " with the correct message. Did you forget to add this config?")
-            }
-            // It failed like expected, and we did not specify any message for this config
-          }
-        case Failure(e: Throwable) => {
-          if (expectedToFailWithSpecificMessage) {
-            if (e.getMessage == null || !message.exists(e.getMessage.contains(_))) {
-              fail(s"Unexpected exception in ${thisScenario.name} with error message " + e.getMessage, e)
+            if (correctError(e.getMessage, message) && correctError(actualErrorType, errorType)) {
+              fail("Unexpectedly (but correctly!) failed in " + thisScenario.name + " with the correct error. Did you forget to add this config?", e)
             }
           }
         }
       }
     }
+  }
+
+  private def correctError(actualError: String, possibleErrors: Seq[String]): Boolean = {
+    possibleErrors == Seq.empty || (actualError != null && possibleErrors.exists(s => actualError.replaceAll("\\r", "").contains(s.replaceAll("\\r", ""))))
   }
 
   protected def executeWith(expectSucceed: TestConfiguration,
@@ -145,45 +146,59 @@ trait CypherComparisonSupport extends CypherTestSupport {
                             resultAssertionInTx: Option[(InternalExecutionResult) => Unit] = None,
                             executeBefore: () => Unit = () => {},
                             params: Map[String, Any] = Map.empty): InternalExecutionResult = {
-    // Never consider Morsel even if test requests it
-    val expectSucceedEffective = expectSucceed - Configs.Morsel
-    val expectedDifferentResultsEffective = expectedDifferentResults - Configs.Morsel
+    if (expectSucceed.scenarios.nonEmpty) {
+      val compareResults = expectSucceed - expectedDifferentResults
+      val baseScenario = extractBaseScenario(expectSucceed, compareResults)
+      val explicitlyRequestedExperimentalScenarios = expectSucceed.scenarios intersect Configs.Experimental.scenarios
 
-    val compareResults = expectSucceedEffective - expectedDifferentResultsEffective
-    val baseScenario =
-      if (expectSucceedEffective.scenarios.nonEmpty) extractBaseScenario(expectSucceedEffective, compareResults)
-      else TestScenario(Versions.Default, Planners.Default, Runtimes.Interpreted)
+      val positiveResults = ((Configs.AbsolutelyAll.scenarios ++ explicitlyRequestedExperimentalScenarios) - baseScenario).flatMap {
+        thisScenario =>
+          executeScenario(thisScenario, query, expectSucceed.containsScenario(thisScenario), executeBefore, params, resultAssertionInTx)
+      }
 
-    val explicitlyRequestedExperimentalScenarios = expectSucceedEffective.scenarios intersect Configs.Experimental.scenarios
-    val positiveResults = ((Configs.AbsolutelyAll.scenarios ++ explicitlyRequestedExperimentalScenarios) - baseScenario).flatMap {
-      thisScenario =>
-        executeScenario(thisScenario, query, expectSucceedEffective.containsScenario(thisScenario), executeBefore, params, resultAssertionInTx)
+      //Must be run last and have no rollback to be able to do certain result assertions
+      val baseOption = executeScenario(baseScenario, query, expectedToSucceed = true, executeBefore, params, resultAssertionInTx = None, rollback = false)
+
+      // Assumption: baseOption.get is safe because the baseScenario is expected to succeed
+      val baseResult = baseOption.get._2
+      //must also check planComparisonStrategy on baseScenario
+      planComparisonStrategy.compare(expectSucceed, baseScenario, baseResult)
+
+      positiveResults.foreach {
+        case (scenario, result) =>
+          planComparisonStrategy.compare(expectSucceed, scenario, result)
+
+          if (compareResults.containsScenario(scenario)) {
+            assertResultsSame(result, baseResult, query, s"${scenario.name} returned different results than ${baseScenario.name}")
+          } else {
+            assertResultsNotSame(result, baseResult, query, s"Unexpectedly (but correctly!)\n${scenario.name} returned same results as ${baseScenario.name}")
+          }
+      }
+      baseResult
+    } else {
+      /**
+        * If we are ending up here we don't expect any config to succeed i.e. Configs.Empty was used.
+        * Currently this only happens when we use a[xxxException] should be thrownBy...
+        * Consider to not allow this, but always use failWithError instead.
+        * For now, don't support plan comparisons and only run som default config without a transaction to get a result.
+        */
+      if (planComparisonStrategy != DoNotComparePlans) {
+        fail("At least one scenario must be expected to succeed to be able to compare plans")
+      }
+
+      val baseScenario = TestScenario(Versions.Default, Planners.Default, Runtimes.Interpreted)
+      baseScenario.prepare()
+      executeBefore()
+      val baseResult = innerExecute(s"CYPHER ${baseScenario.preparserOptions} $query", params)
+      baseResult
     }
-
-    baseScenario.prepare()
-    executeBefore()
-    val baseResult = innerExecute(s"CYPHER ${baseScenario.preparserOptions} $query", params)
-    baseScenario.checkResultForSuccess(query, baseResult)
-
-    positiveResults.foreach {
-      case (scenario, result) =>
-        planComparisonStrategy.compare(expectSucceedEffective, scenario, result)
-
-        if (compareResults.containsScenario(scenario)) {
-          assertResultsSame(result, baseResult, query, s"${scenario.name} returned different results than ${baseScenario.name}")
-        } else {
-          assertResultsNotSame(result, baseResult, query, s"Unexpectedly (but correctly!)\n${scenario.name} returned same results as ${baseScenario.name}")
-        }
-    }
-
-    baseResult
   }
 
   private def extractBaseScenario(expectSucceed: TestConfiguration, compareResults: TestConfiguration): TestScenario = {
     val scenariosToChooseFrom = if (compareResults.scenarios.isEmpty) expectSucceed else compareResults
 
     if (scenariosToChooseFrom.scenarios.isEmpty) {
-      fail("At least one scenario must be expected to succeed, be comparable with plan and result")
+      fail("At least one scenario must be expected to succeed, to be comparable with plan and result")
     }
     val preferredScenario = TestScenario(Versions.Default, Planners.Default, Runtimes.Interpreted)
     if (scenariosToChooseFrom.containsScenario(preferredScenario))
@@ -197,25 +212,27 @@ trait CypherComparisonSupport extends CypherTestSupport {
                               expectedToSucceed: Boolean,
                               executeBefore: () => Unit,
                               params: Map[String, Any],
-                              resultAssertionInTx: Option[(InternalExecutionResult) => Unit]) = {
+                              resultAssertionInTx: Option[(InternalExecutionResult) => Unit],
+                              rollback: Boolean = true) = {
     scenario.prepare()
-    val tryResult =
-      graph.rollback(
-        {
-          executeBefore()
-          val tryRes = Try(innerExecute(s"CYPHER ${scenario.preparserOptions} $query", params))
-          if (expectedToSucceed && resultAssertionInTx.isDefined) {
-            tryRes match {
-              case Success(thisResult) =>
-                withClue(s"result in transaction for ${scenario.name}\n") {
-                  resultAssertionInTx.get.apply(thisResult)
-                }
-              case Failure(_) =>
-              // No need to do anything: will be handled by match below
+
+    def execute = {
+      executeBefore()
+      val tryRes = Try(innerExecute(s"CYPHER ${scenario.preparserOptions} $query", params))
+      if (expectedToSucceed && resultAssertionInTx.isDefined) {
+        tryRes match {
+          case Success(thisResult) =>
+            withClue(s"result in transaction for ${scenario.name}\n") {
+              resultAssertionInTx.get.apply(thisResult)
             }
-          }
-          tryRes
-        })
+          case Failure(_) =>
+          // No need to do anything: will be handled by match below
+        }
+      }
+      tryRes
+    }
+
+    val tryResult = if (rollback) graph.rollback(execute) else execute
 
     if (expectedToSucceed) {
       tryResult match {
@@ -346,8 +363,8 @@ object CypherComparisonSupport {
 
     implicit def versionToVersions(version: Version): Versions = Versions(version)
 
-    val oldest = orderedVersions.head
-    val latest = orderedVersions.last
+    val oldest: Version = orderedVersions.head
+    val latest: Version = orderedVersions.last
     val all = Versions(orderedVersions: _*)
 
     object V2_3 extends Version("2.3")
@@ -421,8 +438,6 @@ object CypherComparisonSupport {
     object ProcedureOrSchema extends Runtime(Set("PROCEDURE"), "")
 
     object Default extends Runtime(Set("COMPILED", "SLOTTED", "INTERPRETED", "PROCEDURE"), "")
-
-    object Morsel extends Runtime(Set("MORSEL"), "runtime=morsel")
 
   }
 
@@ -515,7 +530,7 @@ object CypherComparisonSupport {
           if (runtime.acceptedRuntimeNames.contains(reportedRuntimeName)
             && planner.acceptedPlannerNames.contains(reportedPlannerName)
             && version.acceptedRuntimeVersionNames.contains(reportedVersionName)) {
-            fail(s"Unexpectedly succeeded using $name for query $query, with $reportedVersionName and $reportedRuntimeName runtime and $reportedPlannerName planner.")
+            fail(s"Unexpectedly succeeded using $name for query $query, with $reportedVersionName $reportedRuntimeName runtime and $reportedPlannerVersionName $reportedPlannerName planner.")
           }
       }
     }
@@ -585,8 +600,6 @@ object CypherComparisonSupport {
 
     def Compiled: TestConfiguration = TestConfiguration(Versions.V3_4, Planners.Cost, Runtimes(Runtimes.CompiledSource, Runtimes.CompiledBytecode))
 
-    def Morsel: TestConfiguration = TestConfiguration(Versions.Default, Planners.Default, Runtimes(Runtimes.Morsel))
-
     def Interpreted: TestConfiguration =
       TestConfiguration(Versions.Default, Planners.Default, Runtimes(Runtimes.Interpreted, Runtimes.Slotted)) +
         TestConfiguration(Versions.V2_3 -> Versions.V3_1, Planners.all, Runtimes.Default) +
@@ -603,9 +616,13 @@ object CypherComparisonSupport {
 
     def DefaultInterpreted: TestConfiguration = TestScenario(Versions.Default, Planners.Default, Runtimes.Interpreted)
 
+    def DefaultRule: TestConfiguration = TestScenario(Versions.Default, Planners.Rule, Runtimes.Default)
+
     def Cost2_3: TestConfiguration = TestScenario(Versions.V2_3, Planners.Cost, Runtimes.Default)
 
     def Cost3_1: TestConfiguration = TestScenario(Versions.V3_1, Planners.Cost, Runtimes.Default)
+
+    def Cost3_3: TestConfiguration = TestScenario(Versions.V3_3, Planners.Cost, Runtimes.Default)
 
     def Cost3_4: TestConfiguration = TestScenario(Versions.V3_4, Planners.Cost, Runtimes.Default)
 
@@ -633,23 +650,23 @@ object CypherComparisonSupport {
 
     def Procs: TestConfiguration = TestScenario(Versions.Default, Planners.Default, Runtimes.ProcedureOrSchema)
 
+    /**
+      * Handy configs for things only supported from 3.3 (not rule) and for checking plans
+      */
+    def OldAndRule: TestConfiguration = Cost2_3 + Cost3_1 + AllRulePlanners
+
+    /**
+      * Configs which support CREATE, DELETE, SET, REMOVE, MERGE etc.
+      */
+    def UpdateConf: TestConfiguration = Interpreted - Cost2_3
+
     /*
     If you are unsure what you need, this is a good start. It's not really all scenarios, but this is testing all
     interesting scenarios.
      */
-    def All: TestConfiguration =
-      TestConfiguration(Versions.V3_4, Planners.Cost, Runtimes(Runtimes.CompiledSource, Runtimes.CompiledBytecode)) +
-        TestConfiguration(Versions.Default, Planners.Default, Runtimes(Runtimes.Interpreted, Runtimes.Slotted)) +
-        TestConfiguration(Versions.V2_3 -> Versions.V3_1, Planners.all, Runtimes.Default) +
-        TestScenario(Versions.Default, Planners.Rule, Runtimes.Default) +
-        TestScenario(Versions.V3_3, Planners.Cost, Runtimes.Default)
+    def All: TestConfiguration = AbsolutelyAll - Procs
 
-    def AllExceptSlotted: TestConfiguration =
-      TestConfiguration(Versions.V3_4, Planners.Cost, Runtimes(Runtimes.CompiledSource, Runtimes.CompiledBytecode)) +
-        TestConfiguration(Versions.Default, Planners.Default, Runtimes.Interpreted) +
-        TestConfiguration(Versions.V2_3 -> Versions.V3_1, Planners.all, Runtimes.Default) +
-        TestScenario(Versions.Default, Planners.Rule, Runtimes.Default) +
-        TestScenario(Versions.V3_3, Planners.Cost, Runtimes.Default)
+    def AllExceptSlotted: TestConfiguration = All - SlottedInterpreted
 
     /**
       * These are all configurations that will be executed even if not explicitly expected to succeed or fail.
@@ -669,7 +686,6 @@ object CypherComparisonSupport {
       * I.e. there will be no check to see if they unexpectedly succeed on tests where they were not explicitly requested.
       */
     def Experimental: TestConfiguration =
-      //TestConfiguration(Versions.Default, Planners.Default, Runtimes(Runtimes.Morsel))
       TestConfiguration.empty
 
     def Empty: TestConfiguration = TestConfiguration.empty

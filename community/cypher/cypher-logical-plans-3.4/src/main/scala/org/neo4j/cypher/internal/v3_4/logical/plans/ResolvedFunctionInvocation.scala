@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -32,8 +32,7 @@ object ResolvedFunctionInvocation {
   def apply(signatureLookup: QualifiedName => Option[UserFunctionSignature])(unresolved: FunctionInvocation): ResolvedFunctionInvocation = {
     val position = unresolved.position
     val name = QualifiedName(unresolved)
-    val signature = signatureLookup(name)
-    ResolvedFunctionInvocation(name, signature, unresolved.args)(position)
+    ResolvedFunctionInvocation(name, signatureLookup(name), unresolved.args)(position)
   }
 }
 
@@ -88,7 +87,8 @@ case class ResolvedFunctionInvocation(qualifiedName: QualifiedName,
             case (field, arg) =>
               SemanticExpressionCheck.check(SemanticContext.Results, arg) chain
                 SemanticExpressionCheck.expectType(field.typ.covariant, arg)
-          }.foldLeft(success)(_ chain _)
+          }.foldLeft(success)(_ chain _) chain
+            SemanticExpressionCheck.specifyType(signature.outputType.covariant, this)
         } else {
           val msg = (if (signature.inputSignature.isEmpty) "arguments"
           else if (signature.inputSignature.size == 1) s"argument of type ${signature.inputSignature.head.typ.toNeoTypeString}"

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -22,18 +22,26 @@ package org.neo4j.bolt.v1.runtime;
 import org.junit.Test;
 
 import java.time.Clock;
+import java.util.Collections;
 
 import org.neo4j.bolt.BoltChannel;
 import org.neo4j.bolt.testing.BoltResponseRecorder;
 import org.neo4j.bolt.v1.runtime.spi.BoltResult;
+import org.neo4j.function.ThrowingBiConsumer;
 import org.neo4j.graphdb.TransactionFailureException;
 import org.neo4j.graphdb.security.AuthorizationExpiredException;
 import org.neo4j.kernel.api.exceptions.Status;
+import org.neo4j.kernel.impl.logging.NullLogService;
+import org.neo4j.kernel.impl.util.ValueUtils;
 
 import static java.util.Collections.emptyMap;
 import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
@@ -41,6 +49,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.RETURNS_MOCKS;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.neo4j.bolt.testing.BoltMatchers.canReset;
@@ -59,10 +68,10 @@ import static org.neo4j.bolt.v1.runtime.BoltStateMachine.State.READY;
 import static org.neo4j.bolt.v1.runtime.BoltStateMachine.State.STREAMING;
 import static org.neo4j.bolt.v1.runtime.MachineRoom.EMPTY_PARAMS;
 import static org.neo4j.bolt.v1.runtime.MachineRoom.USER_AGENT;
+import static org.neo4j.bolt.v1.runtime.MachineRoom.init;
 import static org.neo4j.bolt.v1.runtime.MachineRoom.newMachine;
 import static org.neo4j.bolt.v1.runtime.MachineRoom.newMachineWithTransaction;
 import static org.neo4j.bolt.v1.runtime.MachineRoom.newMachineWithTransactionSPI;
-import static org.neo4j.test.assertion.Assert.assertException;
 
 public class BoltStateMachineTest
 {
@@ -301,7 +310,7 @@ public class BoltStateMachineTest
         BoltResponseRecorder recorder = new BoltResponseRecorder()
         {
             @Override
-            public void onRecords( BoltResult result, boolean pull ) throws Exception
+            public void onRecords( BoltResult result, boolean pull )
             {
                 throw new RuntimeException( "I've been expecting you, Mr Bond." );
             }
@@ -399,7 +408,7 @@ public class BoltStateMachineTest
     }
 
     @Test
-    public void actionsDisallowedBeforeInitialized() throws Throwable
+    public void actionsDisallowedBeforeInitialized()
     {
         // Given
         BoltStateMachine machine = newMachine();
@@ -430,13 +439,20 @@ public class BoltStateMachineTest
         machine.state = READY;
 
         // When & Then
-        assertException( () -> machine.run( "THIS WILL BE IGNORED", EMPTY_PARAMS, nullResponseHandler() ),
-                BoltConnectionAuthFatality.class, "Auth expired!" );
+        try
+        {
+            machine.run( "THIS WILL BE IGNORED", EMPTY_PARAMS, nullResponseHandler() );
+            fail( "Exception expected" );
+        }
+        catch ( BoltConnectionAuthFatality e )
+        {
+            assertEquals( "Auth expired!", e.getCause().getMessage() );
+        }
     }
 
     @SuppressWarnings( "unchecked" )
     @Test
-    public void shouldTerminateOnAuthExpiryDuringSTREAMING() throws Throwable
+    public void shouldTerminateOnAuthExpiryDuringSTREAMINGPullAll() throws Throwable
     {
         // Given
         BoltResponseHandler responseHandler = mock( BoltResponseHandler.class );
@@ -447,12 +463,37 @@ public class BoltStateMachineTest
         ((TransactionStateMachine) machine.statementProcessor()).ctx.currentResult = BoltResult.EMPTY;
 
         // When & Then
-        assertException( () -> machine.pullAll( responseHandler ),
-                BoltConnectionAuthFatality.class, "Auth expired!" );
+        try
+        {
+            machine.discardAll( responseHandler );
+            fail( "Exception expected" );
+        }
+        catch ( BoltConnectionAuthFatality e )
+        {
+            assertEquals( "Auth expired!", e.getCause().getMessage() );
+        }
+    }
 
-        // When & Then
-        assertException( () -> machine.discardAll( responseHandler ),
-                BoltConnectionAuthFatality.class, "Auth expired!" );
+    @SuppressWarnings( "unchecked" )
+    @Test
+    public void shouldTerminateOnAuthExpiryDuringSTREAMINGDiscardAll() throws Throwable
+    {
+        // Given
+        BoltResponseHandler responseHandler = mock( BoltResponseHandler.class );
+        doThrow( new AuthorizationExpiredException( "Auth expired!" ) ).when( responseHandler )
+                .onRecords( any(), anyBoolean() );
+        BoltStateMachine machine = newMachine( STREAMING );
+        // We assume the only implementation of statement processor is TransactionStateMachine
+        ((TransactionStateMachine) machine.statementProcessor()).ctx.currentResult = BoltResult.EMPTY;
+        try
+        {
+            machine.pullAll( responseHandler );
+            fail( "Exception expected" );
+        }
+        catch ( BoltConnectionAuthFatality e )
+        {
+            assertEquals( "Auth expired!", e.getCause().getMessage() );
+        }
     }
 
     @Test
@@ -477,12 +518,12 @@ public class BoltStateMachineTest
     }
 
     @Test
-    public void shouldCallOnTerminateWhenClosing() throws Throwable
+    public void shouldCallOnTerminateWhenClosing()
     {
         // Given
         BoltStateMachineSPI spi = mock( BoltStateMachineSPI.class, RETURNS_MOCKS );
         BoltChannel boltChannel = mock( BoltChannel.class );
-        final BoltStateMachine machine = new BoltStateMachine( spi, boltChannel, Clock.systemUTC() );
+        final BoltStateMachine machine = new BoltStateMachine( spi, boltChannel, Clock.systemUTC(), NullLogService.getInstance() );
 
         // When
         machine.close();
@@ -496,10 +537,282 @@ public class BoltStateMachineTest
     {
         BoltStateMachineSPI spi = mock( BoltStateMachineSPI.class );
         BoltChannel boltChannel = mock( BoltChannel.class );
-        BoltStateMachine machine = new BoltStateMachine( spi, boltChannel, Clock.systemUTC() );
+        BoltStateMachine machine = new BoltStateMachine( spi, boltChannel, Clock.systemUTC(), NullLogService.getInstance() );
 
         machine.close();
 
         verify( boltChannel ).close();
+    }
+
+    @Test
+    public void shouldSetPendingErrorOnMarkFailedIfNoHandler()
+    {
+        BoltStateMachineSPI spi = mock( BoltStateMachineSPI.class );
+        BoltChannel boltChannel = mock( BoltChannel.class );
+        BoltStateMachine machine = new BoltStateMachine( spi, boltChannel, Clock.systemUTC(), NullLogService.getInstance() );
+        Neo4jError error = Neo4jError.from( Status.Request.NoThreadsAvailable, "no threads" );
+
+        machine.markFailed( error );
+
+        assertEquals( error, machine.ctx.pendingError );
+        assertEquals( BoltStateMachine.State.FAILED, machine.state );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextInitMessageOnMarkFailedIfNoHandler() throws Exception
+    {
+        testMarkFailedOnNextMessage( ( machine, handler ) -> machine.init( "Test/1.0", Collections.emptyMap(), handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextRunMessageOnMarkFailedIfNoHandler() throws Exception
+    {
+        testMarkFailedOnNextMessage( ( machine, handler ) -> machine.run( "RETURN 1", ValueUtils.asMapValue( Collections.emptyMap() ), handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextPullAllMessageOnMarkFailedIfNoHandler() throws Exception
+    {
+        testMarkFailedOnNextMessage( ( machine, handler ) -> machine.pullAll( handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextDiscardAllMessageOnMarkFailedIfNoHandler() throws Exception
+    {
+        testMarkFailedOnNextMessage( ( machine, handler ) -> machine.discardAll( handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextResetMessageOnMarkFailedIfNoHandler() throws Exception
+    {
+        testReadyStateAfterMarkFailedOnNextMessage( ( machine, handler ) -> machine.reset( handler ) );
+    }
+
+    @Test
+    public void shouldGotoReadyStateOnNextAckFailureMessageOnMarkFailedIfNoHandler() throws Exception
+    {
+        testReadyStateAfterMarkFailedOnNextMessage( ( machine, handler ) -> machine.ackFailure( handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextExternalErrorMessageOnMarkFailedIfNoHandler() throws Exception
+    {
+        testMarkFailedOnNextMessage( ( machine, handler ) -> machine.externalError( Neo4jError.from( Status.Request.Invalid, "invalid" ), handler ) );
+    }
+
+    @Test
+    public void shouldSetPendingIgnoreOnMarkFailedIfAlreadyFailedAndNoHandler() throws Exception
+    {
+        BoltStateMachine machine = newMachine( BoltStateMachine.State.FAILED );
+
+        Neo4jError error = Neo4jError.from( Status.Request.NoThreadsAvailable, "no threads" );
+        machine.markFailed( error );
+
+        assertTrue( machine.ctx.pendingIgnore );
+        assertEquals( null, machine.ctx.pendingError );
+        assertEquals( BoltStateMachine.State.FAILED, machine.state );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextInitMessageOnMarkFailedIfAlreadyFailedAndNoHandler() throws Exception
+    {
+        testMarkFailedShouldYieldIgnoredIfAlreadyFailed( ( machine, handler ) -> machine.init( "Test/1.0", Collections.emptyMap(), handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextRunMessageOnMarkFailedIfAlreadyFailedAndNoHandler() throws Exception
+    {
+        testMarkFailedShouldYieldIgnoredIfAlreadyFailed(
+                ( machine, handler ) -> machine.run( "RETURN 1", ValueUtils.asMapValue( Collections.emptyMap() ), handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextPullAllMessageOnMarkFailedIfAlreadyFailedAndNoHandler() throws Exception
+    {
+        testMarkFailedShouldYieldIgnoredIfAlreadyFailed( ( machine, handler ) -> machine.pullAll( handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextDiscardAllMessageOnMarkFailedIfAlreadyFailedAndNoHandler() throws Exception
+    {
+        testMarkFailedShouldYieldIgnoredIfAlreadyFailed( ( machine, handler ) -> machine.discardAll( handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextResetMessageOnMarkFailedIfAlreadyFailedAndNoHandler() throws Exception
+    {
+        testMarkFailedShouldYieldSuccessIfAlreadyFailed( ( machine, handler ) -> machine.reset( handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextAckFailureMessageOnMarkFailedIfAlreadyFailedAndNoHandler() throws Exception
+    {
+        testMarkFailedShouldYieldSuccessIfAlreadyFailed( ( machine, handler ) -> machine.ackFailure( handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnNextExternalErrorMessageOnMarkFailedIfAlreadyFailedAndNoHandler() throws Exception
+    {
+        testMarkFailedShouldYieldIgnoredIfAlreadyFailed(
+                ( machine, handler ) -> machine.externalError( Neo4jError.from( Status.Request.Invalid, "invalid" ), handler ) );
+    }
+
+    @Test
+    public void shouldInvokeResponseHandlerOnMarkFailedIfThereIsHandler() throws Exception
+    {
+        BoltStateMachine machine = newMachine( BoltStateMachine.State.READY );
+        Neo4jError error = Neo4jError.from( Status.Request.NoThreadsAvailable, "no threads" );
+
+        machine.ctx.responseHandler = mock( BoltResponseHandler.class );
+        machine.markFailed( error );
+
+        assertNull( machine.ctx.pendingError );
+        assertFalse( machine.ctx.pendingIgnore );
+        assertEquals( BoltStateMachine.State.FAILED, machine.state );
+        verify( machine.ctx.responseHandler ).markFailed( error );
+    }
+
+    @Test
+    public void shouldNotFailWhenTerminatedAndPullAll() throws Exception
+    {
+        BoltStateMachineSPI spi = mock( BoltStateMachineSPI.class, RETURNS_MOCKS );
+        BoltStateMachine machine = init( newMachine( spi ) );
+        machine.state = STREAMING;
+        ((TransactionStateMachine) machine.statementProcessor()).ctx.currentResult = BoltResult.EMPTY;
+
+        BoltResponseHandler responseHandler = mock( BoltResponseHandler.class );
+
+        machine.terminate();
+        machine.pullAll( responseHandler );
+
+        verify( spi, never() ).reportError( any() );
+        assertNotEquals( FAILED, machine.state );
+    }
+
+    @Test
+    public void shouldSucceedOnResetOnFailedState() throws Exception
+    {
+        // Given
+        BoltResponseRecorder recorder = new BoltResponseRecorder();
+        BoltStateMachine machine = init( newMachine() );
+
+        // Fail machine on PULLALL
+        machine.markFailed( Neo4jError.from( Status.Request.NoThreadsAvailable, "No Threads Available" ) );
+        machine.pullAll( recorder );
+
+        // When I RESET...
+        machine.interrupt();
+        machine.markFailed( Neo4jError.from( Status.Request.NoThreadsAvailable, "No Threads Available" ) );
+        machine.reset( recorder );
+
+        assertThat( recorder.nextResponse(), failedWithStatus( Status.Request.NoThreadsAvailable ) );
+        assertThat( recorder.nextResponse(), succeeded() );
+    }
+
+    @Test
+    public void shouldSucceedOnConsecutiveResetsOnFailedState() throws Exception
+    {
+        // Given
+        BoltResponseRecorder recorder = new BoltResponseRecorder();
+        BoltStateMachine machine = init( newMachine() );
+
+        // Fail machine on PULLALL
+        machine.markFailed( Neo4jError.from( Status.Request.NoThreadsAvailable, "No Threads Available" ) );
+        machine.pullAll( recorder );
+
+        // When I RESET twice...
+        machine.interrupt();
+        machine.interrupt();
+        // First RESET fails to be scheduled
+        machine.markFailed( Neo4jError.from( Status.Request.NoThreadsAvailable, "No Threads Available" ) );
+        machine.reset( recorder );
+        // Second RESET fails as well
+        machine.markFailed( Neo4jError.from( Status.Request.NoThreadsAvailable, "No Threads Available" ) );
+        machine.reset( recorder );
+
+        assertThat( recorder.nextResponse(), failedWithStatus( Status.Request.NoThreadsAvailable ) );
+        assertThat( recorder.nextResponse(), wasIgnored() );
+        assertThat( recorder.nextResponse(), succeeded() );
+    }
+
+    private static void testMarkFailedOnNextMessage( ThrowingBiConsumer<BoltStateMachine,BoltResponseHandler,BoltConnectionFatality> action ) throws Exception
+    {
+        // Given
+        BoltStateMachine machine = newMachine( BoltStateMachine.State.READY );
+        BoltResponseHandler responseHandler = mock( BoltResponseHandler.class );
+
+        Neo4jError error = Neo4jError.from( Status.Request.NoThreadsAvailable, "no threads" );
+        machine.markFailed( error );
+
+        // When
+        action.accept( machine, responseHandler );
+
+        // Expect
+        assertNull( machine.ctx.pendingError );
+        assertFalse( machine.ctx.pendingIgnore );
+        assertEquals( BoltStateMachine.State.FAILED, machine.state );
+        verify( responseHandler ).markFailed( error );
+    }
+
+    private static void testReadyStateAfterMarkFailedOnNextMessage( ThrowingBiConsumer<BoltStateMachine,BoltResponseHandler,BoltConnectionFatality> action )
+            throws Exception
+    {
+        // Given
+        BoltStateMachine machine = newMachine( BoltStateMachine.State.READY );
+        BoltResponseHandler responseHandler = mock( BoltResponseHandler.class );
+
+        Neo4jError error = Neo4jError.from( Status.Request.NoThreadsAvailable, "no threads" );
+        machine.markFailed( error );
+
+        // When
+        action.accept( machine, responseHandler );
+
+        // Expect
+        assertNull( machine.ctx.pendingError );
+        assertFalse( machine.ctx.pendingIgnore );
+        assertEquals( BoltStateMachine.State.READY, machine.state );
+        verify( responseHandler, never() ).markFailed( any() );
+        verify( responseHandler, never() ).markIgnored();
+    }
+
+    private static void testMarkFailedShouldYieldIgnoredIfAlreadyFailed(
+            ThrowingBiConsumer<BoltStateMachine,BoltResponseHandler,BoltConnectionFatality> action ) throws Exception
+    {
+        // Given
+        BoltStateMachine machine = newMachine( BoltStateMachine.State.FAILED );
+        BoltResponseHandler responseHandler = mock( BoltResponseHandler.class );
+
+        Neo4jError error = Neo4jError.from( Status.Request.NoThreadsAvailable, "no threads" );
+        machine.markFailed( error );
+
+        // When
+        action.accept( machine, responseHandler );
+
+        // Expect
+        assertNull( machine.ctx.pendingError );
+        assertFalse( machine.ctx.pendingIgnore );
+        assertEquals( BoltStateMachine.State.FAILED, machine.state );
+        verify( responseHandler ).markIgnored();
+    }
+
+    private static void testMarkFailedShouldYieldSuccessIfAlreadyFailed(
+            ThrowingBiConsumer<BoltStateMachine,BoltResponseHandler,BoltConnectionFatality> action ) throws Exception
+    {
+        // Given
+        BoltStateMachine machine = newMachine( BoltStateMachine.State.FAILED );
+        BoltResponseHandler responseHandler = mock( BoltResponseHandler.class );
+
+        Neo4jError error = Neo4jError.from( Status.Request.NoThreadsAvailable, "no threads" );
+        machine.markFailed( error );
+
+        // When
+        action.accept( machine, responseHandler );
+
+        // Expect
+        assertNull( machine.ctx.pendingError );
+        assertFalse( machine.ctx.pendingIgnore );
+        assertEquals( BoltStateMachine.State.READY, machine.state );
+        verify( responseHandler, never() ).markIgnored();
+        verify( responseHandler, never() ).markFailed( any() );
     }
 }

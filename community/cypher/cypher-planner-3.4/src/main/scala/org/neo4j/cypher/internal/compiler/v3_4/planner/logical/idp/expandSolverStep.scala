@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -21,27 +21,27 @@ package org.neo4j.cypher.internal.compiler.v3_4.planner.logical.idp
 
 import org.neo4j.cypher.internal.compiler.v3_4.planner.logical.LogicalPlanningContext
 import org.neo4j.cypher.internal.ir.v3_4._
-import org.neo4j.cypher.internal.v3_4.logical.plans.{ExpandAll, ExpandInto, LogicalPlan}
+import org.neo4j.cypher.internal.planner.v3_4.spi.PlanningAttributes.Solveds
 import org.neo4j.cypher.internal.v3_4.expressions._
+import org.neo4j.cypher.internal.v3_4.logical.plans.{ExpandAll, ExpandInto, LogicalPlan}
 
 case class expandSolverStep(qg: QueryGraph) extends IDPSolverStep[PatternRelationship, LogicalPlan, LogicalPlanningContext] {
 
   import org.neo4j.cypher.internal.compiler.v3_4.planner.logical.idp.expandSolverStep._
 
-  override def apply(registry: IdRegistry[PatternRelationship], goal: Goal, table: IDPCache[LogicalPlan])
-                    (implicit context: LogicalPlanningContext): Iterator[LogicalPlan] = {
+  override def apply(registry: IdRegistry[PatternRelationship], goal: Goal, table: IDPCache[LogicalPlan], context: LogicalPlanningContext, solveds: Solveds): Iterator[LogicalPlan] = {
     val result: Iterator[Iterator[LogicalPlan]] =
       for (patternId <- goal.iterator;
            pattern <- registry.lookup(patternId);
            plan <- table(goal - patternId)) yield {
         if (plan.availableSymbols.contains(pattern.name))
           Iterator(
-            planSingleProjectEndpoints(pattern, plan)
+            planSingleProjectEndpoints(pattern, plan, context)
           )
         else
           Iterator(
-            planSinglePatternSide(qg, pattern, plan, pattern.left),
-            planSinglePatternSide(qg, pattern, plan, pattern.right)
+            planSinglePatternSide(qg, pattern, plan, pattern.left, context),
+            planSinglePatternSide(qg, pattern, plan, pattern.right, context)
           ).flatten
       }
 
@@ -51,19 +51,21 @@ case class expandSolverStep(qg: QueryGraph) extends IDPSolverStep[PatternRelatio
 
 object expandSolverStep {
 
-  def planSingleProjectEndpoints(patternRel: PatternRelationship, plan: LogicalPlan)
-                                (implicit context: LogicalPlanningContext): LogicalPlan = {
+  def planSingleProjectEndpoints(patternRel: PatternRelationship, plan: LogicalPlan, context: LogicalPlanningContext): LogicalPlan = {
     val (start, end) = patternRel.inOrder
     val isStartInScope = plan.availableSymbols(start)
     val isEndInScope = plan.availableSymbols(end)
-    context.logicalPlanProducer.planEndpointProjection(plan, start, isStartInScope, end, isEndInScope, patternRel)
+    context.logicalPlanProducer.planEndpointProjection(plan, start, isStartInScope, end, isEndInScope, patternRel, context)
   }
 
-  def planSinglePatternSide(qg: QueryGraph, patternRel: PatternRelationship, sourcePlan: LogicalPlan, nodeId: IdName)
-                           (implicit context: LogicalPlanningContext): Option[LogicalPlan] = {
+  def planSinglePatternSide(qg: QueryGraph,
+                            patternRel: PatternRelationship,
+                            sourcePlan: LogicalPlan,
+                            nodeId: String,
+                            context: LogicalPlanningContext): Option[LogicalPlan] = {
     val availableSymbols = sourcePlan.availableSymbols
     if (availableSymbols(nodeId)) {
-      Some(produceLogicalPlan(qg, patternRel, sourcePlan, nodeId, availableSymbols))
+      Some(produceLogicalPlan(qg, patternRel, sourcePlan, nodeId, availableSymbols, context))
     } else {
       None
     }
@@ -72,9 +74,9 @@ object expandSolverStep {
   private def produceLogicalPlan(qg: QueryGraph,
                                  patternRel: PatternRelationship,
                                  sourcePlan: LogicalPlan,
-                                 nodeId: IdName,
-                                 availableSymbols: Set[IdName])
-                                (implicit context: LogicalPlanningContext): LogicalPlan = {
+                                 nodeId: String,
+                                 availableSymbols: Set[String],
+                                 context: LogicalPlanningContext): LogicalPlan = {
     val dir = patternRel.directionRelativeTo(nodeId)
     val otherSide = patternRel.otherSide(nodeId)
     val overlapping = availableSymbols.contains(otherSide)
@@ -82,23 +84,22 @@ object expandSolverStep {
 
     patternRel.length match {
       case SimplePatternLength =>
-        context.logicalPlanProducer.planSimpleExpand(sourcePlan, nodeId, dir, otherSide, patternRel, mode)
+        context.logicalPlanProducer.planSimpleExpand(sourcePlan, nodeId, dir, otherSide, patternRel, mode, context)
 
       case _: VarPatternLength =>
         val availablePredicates: Seq[Expression] =
           qg.selections.predicatesGiven(availableSymbols + patternRel.name)
-        val tempNode = IdName(patternRel.name.name + "_NODES")
-        val tempEdge = IdName(patternRel.name.name + "_RELS")
-        val (nodePredicates: Seq[Expression], edgePredicates: Seq[Expression], solvedPredicates: Seq[Expression]) =
+        val tempNode = patternRel.name + "_NODES"
+        val tempEdge = patternRel.name + "_RELS"
+        val (nodePredicates: Seq[Expression], edgePredicates: Seq[Expression], legacyPredicates: Seq[(Variable,Expression)], solvedPredicates: Seq[Expression]) =
           extractPredicates(
             availablePredicates,
-            originalEdgeName = patternRel.name.name,
-            tempEdge = tempEdge.name,
-            tempNode = tempNode.name,
-            originalNodeName = nodeId.name)
+            originalEdgeName = patternRel.name,
+            tempEdge = tempEdge,
+            tempNode = tempNode,
+            originalNodeName = nodeId)
         val nodePredicate = Ands.create(nodePredicates.toSet)
         val relationshipPredicate = Ands.create(edgePredicates.toSet)
-        val legacyPredicates = extractLegacyPredicates(availablePredicates, patternRel, nodeId)
 
         context.logicalPlanProducer.planVarExpand(
           source = sourcePlan,
@@ -112,37 +113,8 @@ object expandSolverStep {
           nodePredicate = nodePredicate,
           solvedPredicates = solvedPredicates,
           mode = mode,
-          legacyPredicates = legacyPredicates)
+          legacyPredicates = legacyPredicates,
+          context = context)
     }
   }
-
-  def extractLegacyPredicates(availablePredicates: Seq[Expression], patternRel: PatternRelationship,
-                              nodeId: IdName): Seq[(LogicalVariable, Expression)] = {
-    availablePredicates.collect {
-      //MATCH ()-[r* {prop:1337}]->()
-      case all@AllIterablePredicate(FilterScope(variable, Some(innerPredicate)), relId@Variable(patternRel.name.name))
-        if variable == relId || !innerPredicate.dependencies(relId) =>
-        (variable, innerPredicate) -> all
-      //MATCH p = ... WHERE all(n in nodes(p)... or all(r in relationships(p)
-      case all@AllIterablePredicate(FilterScope(variable, Some(innerPredicate)),
-      FunctionInvocation(_, FunctionName(fname), false,
-      Seq(PathExpression(
-      NodePathStep(startNode: Variable, MultiRelationshipPathStep(rel: Variable, _, NilPathStep) ))) ))
-        if (fname  == "nodes" || fname == "relationships")
-          && startNode.name == nodeId.name
-          && rel.name == patternRel.name.name =>
-        (variable, innerPredicate) -> all
-
-      //MATCH p = ... WHERE all(n in nodes(p)... or all(r in relationships(p)
-      case none@NoneIterablePredicate(FilterScope(variable, Some(innerPredicate)),
-      FunctionInvocation(_, FunctionName(fname), false,
-      Seq(PathExpression(
-      NodePathStep(startNode: Variable, MultiRelationshipPathStep(rel: Variable, _, NilPathStep) ))) ))
-        if (fname  == "nodes" || fname == "relationships")
-          && startNode.name == nodeId.name
-          && rel.name == patternRel.name.name =>
-        (variable, Not(innerPredicate)(innerPredicate.position)) -> none
-    }.unzip._1
-  }
-
 }

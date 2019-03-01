@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -39,11 +39,9 @@ import org.neo4j.index.internal.gbptree.Writer;
 import org.neo4j.kernel.api.labelscan.NodeLabelUpdate;
 import org.neo4j.test.rule.RandomRule;
 
+import static java.lang.Integer.max;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertTrue;
-
-import static java.lang.Integer.max;
-
 import static org.neo4j.collection.primitive.PrimitiveLongCollections.EMPTY_LONG_ARRAY;
 import static org.neo4j.collection.primitive.PrimitiveLongCollections.asArray;
 import static org.neo4j.kernel.impl.index.labelscan.NativeLabelScanStoreIT.flipRandom;
@@ -65,7 +63,7 @@ public class NativeLabelScanWriterTest
         // GIVEN
         ControlledInserter inserter = new ControlledInserter();
         long[] expected = new long[NODE_COUNT];
-        try ( NativeLabelScanWriter writer = new NativeLabelScanWriter( max( 5, NODE_COUNT / 100 ) ) )
+        try ( NativeLabelScanWriter writer = new NativeLabelScanWriter( max( 5, NODE_COUNT / 100 ), NativeLabelScanWriter.EMPTY ) )
         {
             writer.initialize( inserter );
 
@@ -92,7 +90,7 @@ public class NativeLabelScanWriterTest
         // GIVEN
         ControlledInserter inserter = new ControlledInserter();
         boolean failed = false;
-        try ( NativeLabelScanWriter writer = new NativeLabelScanWriter( 1 ) )
+        try ( NativeLabelScanWriter writer = new NativeLabelScanWriter( 1, NativeLabelScanWriter.EMPTY ) )
         {
             writer.initialize( inserter );
 
@@ -130,19 +128,18 @@ public class NativeLabelScanWriterTest
         private final Map<Integer,Map<LabelScanKey,LabelScanValue>> data = new HashMap<>();
 
         @Override
-        public void close() throws IOException
+        public void close()
         {   // Nothing to close
         }
 
         @Override
-        public void put( LabelScanKey key, LabelScanValue value ) throws IOException
+        public void put( LabelScanKey key, LabelScanValue value )
         {
             merge( key, value, ValueMergers.overwrite() );
         }
 
         @Override
         public void merge( LabelScanKey key, LabelScanValue value, ValueMerger<LabelScanKey,LabelScanValue> amender )
-                throws IOException
         {
             // Clone since these instances are reused between calls, internally in the writer
             key = clone( key );
@@ -174,7 +171,7 @@ public class NativeLabelScanWriterTest
         }
 
         @Override
-        public LabelScanValue remove( LabelScanKey key ) throws IOException
+        public LabelScanValue remove( LabelScanKey key )
         {
             throw new UnsupportedOperationException( "Should not be called" );
         }

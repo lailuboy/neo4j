@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,24 +19,33 @@
  */
 package org.neo4j.cypher.internal.runtime.interpreted
 
-import org.neo4j.cypher.internal.planner.v3_4.spi.{IndexDescriptor => CypherIndexDescriptor}
-import org.neo4j.kernel.api.schema.index.{IndexDescriptorFactory, IndexDescriptor => KernelIndexDescriptor}
-import org.neo4j.kernel.api.schema.{LabelSchemaDescriptor, SchemaDescriptorFactory}
+import org.neo4j.cypher.internal.planner.v3_4.spi.{IndexLimitation, SlowContains, IndexDescriptor => CypherIndexDescriptor}
+import org.neo4j.internal.kernel.api.{IndexLimitation => KernelIndexLimitation}
+import org.neo4j.internal.kernel.api.schema.LabelSchemaDescriptor
+import org.neo4j.kernel.api.schema.SchemaDescriptorFactory
+import org.neo4j.kernel.api.schema.index.{SchemaIndexDescriptorFactory, SchemaIndexDescriptor => KernelIndexDescriptor}
 
 trait IndexDescriptorCompatibility {
-  implicit def cypherToKernel(index: CypherIndexDescriptor): KernelIndexDescriptor =
-    IndexDescriptorFactory.forLabel(index.label.id, index.properties.map(_.id):_*)
+  def cypherToKernel(index: CypherIndexDescriptor): KernelIndexDescriptor =
+    SchemaIndexDescriptorFactory.forLabel(index.label.id, index.properties.map(_.id):_*)
 
-  implicit def kernelToCypher(index: KernelIndexDescriptor): CypherIndexDescriptor =
-    CypherIndexDescriptor(index.schema().getLabelId, index.schema().getPropertyIds)
+  def kernelToCypher(index: KernelIndexDescriptor): CypherIndexDescriptor =
+    CypherIndexDescriptor(index.schema().keyId, index.schema().getPropertyIds)
 
-  implicit def cypherToKernelSchema(index: CypherIndexDescriptor): LabelSchemaDescriptor =
+  def kernelToCypher(limitation: KernelIndexLimitation): IndexLimitation = {
+    limitation match {
+      case KernelIndexLimitation.SLOW_CONTAINS => SlowContains
+      case _ => throw new IllegalStateException("Missing kernel to cypher mapping for limitation: " + limitation)
+    }
+  }
+
+  def cypherToKernelSchema(index: CypherIndexDescriptor): LabelSchemaDescriptor =
     SchemaDescriptorFactory.forLabel(index.label.id, index.properties.map(_.id):_*)
 
-  implicit def toLabelSchemaDescriptor(labelId: Int, propertyKeyIds: Seq[Int]): LabelSchemaDescriptor =
+  def toLabelSchemaDescriptor(labelId: Int, propertyKeyIds: Seq[Int]): LabelSchemaDescriptor =
       SchemaDescriptorFactory.forLabel(labelId, propertyKeyIds.toArray:_*)
 
-  implicit def toLabelSchemaDescriptor(tc: TransactionBoundTokenContext, labelName: String, propertyKeys: Seq[String]): LabelSchemaDescriptor = {
+  def toLabelSchemaDescriptor(tc: TransactionBoundTokenContext, labelName: String, propertyKeys: Seq[String]): LabelSchemaDescriptor = {
     val labelId: Int = tc.getLabelId(labelName)
     val propertyKeyIds: Seq[Int] = propertyKeys.map(tc.getPropertyKeyId)
     toLabelSchemaDescriptor(labelId, propertyKeyIds)

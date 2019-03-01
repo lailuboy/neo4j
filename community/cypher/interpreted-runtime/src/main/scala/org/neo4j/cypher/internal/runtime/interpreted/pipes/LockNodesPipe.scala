@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,17 +19,23 @@
  */
 package org.neo4j.cypher.internal.runtime.interpreted.pipes
 
-import org.neo4j.cypher.internal.runtime.interpreted.ExecutionContext
-import org.neo4j.cypher.internal.v3_4.logical.plans.LogicalPlanId
+import org.neo4j.cypher.internal.runtime.interpreted.{CastSupport, ExecutionContext}
+import org.neo4j.cypher.internal.util.v3_4.attribution.Id
+import org.neo4j.values.AnyValue
+import org.neo4j.values.storable.Values
 import org.neo4j.values.virtual.VirtualNodeValue
 
-case class LockNodesPipe(src: Pipe, variablesToLock: Set[String])(val id: LogicalPlanId = LogicalPlanId.DEFAULT)
+case class LockNodesPipe(src: Pipe, variablesToLock: Set[String])(val id: Id = Id.INVALID_ID)
   extends PipeWithSource(src)  {
 
   protected def internalCreateResults(input: Iterator[ExecutionContext], state: QueryState): Iterator[ExecutionContext] =
     input.map { ctx =>
       val nodesToLock: Set[Long] = variablesToLock.flatMap { varName =>
-        Option(ctx(varName).asInstanceOf[VirtualNodeValue]).map(_.id)
+        ctx(varName) match {
+          case n: VirtualNodeValue => Some(n.id())
+          case x if x == Values.NO_VALUE => None
+          case x: AnyValue => throw CastSupport.typeError[VirtualNodeValue](x)
+        }
       }
       state.query.lockNodes(nodesToLock.toSeq: _*)
       ctx

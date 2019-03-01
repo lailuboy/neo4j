@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,6 +19,10 @@
  */
 package org.neo4j.index.internal.gbptree;
 
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 import org.neo4j.kernel.lifecycle.Lifecycle;
 import org.neo4j.kernel.lifecycle.LifecycleAdapter;
 
@@ -29,48 +33,105 @@ import org.neo4j.kernel.lifecycle.LifecycleAdapter;
  * this, implementing class must be ready to receive new jobs through {@link #add(CleanupJob)}.
  * <p>
  * Jobs may be processed during {@link #add(CleanupJob) add} or {@link Lifecycle#start() start}.
+ * <p>
+ * Take full responsibility for closing added {@link CleanupJob CleanupJobs} as soon as possible after run.
  */
-public interface RecoveryCleanupWorkCollector extends Lifecycle
+public abstract class RecoveryCleanupWorkCollector extends LifecycleAdapter
 {
+    private static ImmediateRecoveryCleanupWorkCollector immediateInstance;
+    private static IgnoringRecoveryCleanupWorkCollector ignoringInstance;
+
     /**
      * Adds {@link CleanupJob} to this collector.
      *
      * @param job cleanup job to perform, now or at some point in the future.
      */
-    void add( CleanupJob job );
+    abstract void add( CleanupJob job );
+
+    void executeWithExecutor( CleanupJobGroupAction action )
+    {
+        ExecutorService executor = Executors.newFixedThreadPool( Runtime.getRuntime().availableProcessors() );
+        try
+        {
+            action.execute( executor );
+        }
+        finally
+        {
+            shutdownExecutorAndVerifyNoLeaks( executor );
+        }
+    }
+    private void shutdownExecutorAndVerifyNoLeaks( ExecutorService executor )
+    {
+        List<Runnable> leakedTasks = executor.shutdownNow();
+        if ( leakedTasks.size() != 0 )
+        {
+            throw new IllegalStateException( "Tasks leaked from CleanupJob. Tasks where " + leakedTasks.toString() );
+        }
+    }
 
     /**
-     * {@link CleanupJob#run() Runs} {@link #add(CleanupJob) added} cleanup jobs right away in the thread
+     * {@link CleanupJob#run( ExecutorService ) Runs} {@link #add(CleanupJob) added} cleanup jobs right away in the thread
      * calling {@link #add(CleanupJob)}.
      */
-    RecoveryCleanupWorkCollector IMMEDIATE = new ImmediateRecoveryCleanupWorkCollector();
+    public static RecoveryCleanupWorkCollector immediate()
+    {
+        if ( immediateInstance == null )
+        {
+            immediateInstance = new ImmediateRecoveryCleanupWorkCollector();
+        }
+        return immediateInstance;
+    }
 
     /**
      * Ignore all clean jobs.
      */
-    RecoveryCleanupWorkCollector NULL = new NullRecoveryCleanupWorkCollector();
+    public static RecoveryCleanupWorkCollector ignore()
+    {
+        if ( ignoringInstance == null )
+        {
+            ignoringInstance = new IgnoringRecoveryCleanupWorkCollector();
+        }
+        return ignoringInstance;
+    }
 
     /**
      * {@link RecoveryCleanupWorkCollector} which runs added {@link CleanupJob} as part of the {@link #add(CleanupJob)}
      * call in the caller thread.
      */
-    class ImmediateRecoveryCleanupWorkCollector extends LifecycleAdapter implements RecoveryCleanupWorkCollector
+    static class ImmediateRecoveryCleanupWorkCollector extends RecoveryCleanupWorkCollector
     {
         @Override
         public void add( CleanupJob job )
         {
-            job.run();
+            executeWithExecutor( executor ->
+            {
+                try
+                {
+                    job.run( executor );
+                }
+                finally
+                {
+                    job.close();
+                }
+            } );
         }
     }
 
     /**
      * {@link RecoveryCleanupWorkCollector} ignoring all {@link CleanupJob} added to it.
      */
-    class NullRecoveryCleanupWorkCollector extends LifecycleAdapter implements RecoveryCleanupWorkCollector
+    static class IgnoringRecoveryCleanupWorkCollector extends RecoveryCleanupWorkCollector
     {
         @Override
         public void add( CleanupJob job )
-        {   // no-op
+        {
+            job.close();
         }
+    }
+
+    @FunctionalInterface
+    interface CleanupJobGroupAction
+    {
+        void execute( ExecutorService executor );
     }
 }

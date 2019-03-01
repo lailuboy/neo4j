@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -22,17 +22,15 @@ package org.neo4j.cypher.internal.runtime.interpreted.pipes
 import java.util.Comparator
 
 import org.neo4j.cypher.internal.runtime.interpreted.ExecutionContext
-import org.neo4j.cypher.internal.v3_4.logical.plans.LogicalPlanId
+import org.neo4j.cypher.internal.util.v3_4.attribution.Id
 import org.neo4j.values.{AnyValue, AnyValues}
 
 case class SortPipe(source: Pipe, orderBy: Seq[ColumnOrder])
-                   (val id: LogicalPlanId = LogicalPlanId.DEFAULT)
+                   (val id: Id = Id.INVALID_ID)
   extends PipeWithSource(source) {
   assert(orderBy.nonEmpty)
 
-  private val comparator = orderBy
-    .map(new ExecutionContextOrdering(_))
-    .reduceLeft[Comparator[ExecutionContext]]((a, b) => a.thenComparing(b))
+  private val comparator = ExecutionContextOrdering.asComparator(orderBy)
 
   protected def internalCreateResults(input: Iterator[ExecutionContext], state: QueryState): Iterator[ExecutionContext] = {
     val array = input.toArray
@@ -41,13 +39,18 @@ case class SortPipe(source: Pipe, orderBy: Seq[ColumnOrder])
   }
 }
 
-private class ExecutionContextOrdering(order: ColumnOrder) extends scala.Ordering[ExecutionContext] {
+case class ExecutionContextOrdering(order: ColumnOrder) extends scala.Ordering[ExecutionContext] {
   override def compare(a: ExecutionContext, b: ExecutionContext): Int = {
     val column = order.id
     val aVal = a(column)
     val bVal = b(column)
     order.compareValues(aVal, bVal)
   }
+}
+
+object ExecutionContextOrdering {
+  def asComparator(orderBy: Seq[ColumnOrder]): Comparator[ExecutionContext] =  orderBy.map(ExecutionContextOrdering.apply)
+    .reduceLeft[Comparator[ExecutionContext]]((a, b) => a.thenComparing(b))
 }
 
 sealed trait ColumnOrder {

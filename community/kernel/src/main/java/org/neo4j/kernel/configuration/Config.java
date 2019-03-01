@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -44,9 +45,12 @@ import javax.annotation.Nullable;
 import org.neo4j.configuration.ConfigOptions;
 import org.neo4j.configuration.ConfigValue;
 import org.neo4j.configuration.LoadableConfig;
+import org.neo4j.configuration.Secret;
+import org.neo4j.graphdb.config.BaseSetting;
 import org.neo4j.graphdb.config.Configuration;
 import org.neo4j.graphdb.config.InvalidSettingException;
 import org.neo4j.graphdb.config.Setting;
+import org.neo4j.graphdb.config.SettingGroup;
 import org.neo4j.graphdb.config.SettingValidator;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.helpers.collection.MapUtil;
@@ -85,6 +89,7 @@ public class Config implements DiagnosticsProvider, Configuration
     private final ConfigurationMigrator migrator;
     private final List<ConfigurationValidator> validators = new ArrayList<>();
     private final Map<String,String> overriddenDefaults = new CopyOnWriteHashMap<>();
+    private final Map<String,BaseSetting<?>> settingsMap; // Only contains fixed settings and not groups
 
     // Messages to this log get replayed into a real logger once logging has been instantiated.
     private Log log = new BufferingLog();
@@ -287,7 +292,7 @@ public class Config implements DiagnosticsProvider, Configuration
         public Config build() throws InvalidSettingException
         {
             List<LoadableConfig> loadableConfigs =
-                    Optional.ofNullable( settingsClasses ).orElse( LoadableConfig.allConfigClasses() );
+                    Optional.ofNullable( settingsClasses ).orElseGet( LoadableConfig::allConfigClasses );
 
             // If reading from a file, make sure we always have a neo4j_home
             if ( configFile != null && !initialSettings.containsKey( GraphDatabaseSettings.neo4j_home.name() ) )
@@ -365,7 +370,7 @@ public class Config implements DiagnosticsProvider, Configuration
      * @param value The initial value to give the setting.
      */
     @Nonnull
-    public static Config defaults( @Nonnull final Setting<?> setting, @Nonnull final String value )
+    public static Config defaults( @Nonnull final Setting<?> setting, final String value )
     {
         return builder().withSetting( setting, value ).build();
     }
@@ -380,6 +385,13 @@ public class Config implements DiagnosticsProvider, Configuration
                 .map( LoadableConfig::getConfigOptions )
                 .flatMap( List::stream )
                 .collect( Collectors.toList() );
+
+        settingsMap = new HashMap<>();
+        configOptions.stream()
+                .map( ConfigOptions::settingGroup )
+                .filter( BaseSetting.class::isInstance )
+                .map( BaseSetting.class::cast )
+                .forEach( setting -> settingsMap.put( setting.name(), setting ) );
 
         validators.addAll( additionalValidators );
         migrator = new AnnotationBasedConfigurationMigrator( settingsClasses );
@@ -558,7 +570,7 @@ public class Config implements DiagnosticsProvider, Configuration
     /**
      * @return a configured setting
      */
-    public Optional<?> getValue( @Nonnull String key )
+    public Optional<Object> getValue( @Nonnull String key )
     {
         return configOptions.stream()
                 .map( it -> it.asConfigValues( params ) )
@@ -566,7 +578,7 @@ public class Config implements DiagnosticsProvider, Configuration
                 .filter( it -> it.name().equals( key ) )
                 .map( ConfigValue::value )
                 .findFirst()
-                .orElse( Optional.empty() );
+                .orElseGet( Optional::empty );
     }
 
     /**
@@ -588,18 +600,18 @@ public class Config implements DiagnosticsProvider, Configuration
 
         synchronized ( params )
         {
-            boolean oldDefault = false;
-            boolean newDefault = false;
+            boolean oldValueIsDefault = false;
+            boolean newValueIsDefault = false;
             String oldValue;
             String newValue;
             if ( update == null || update.isEmpty() )
             {
                 // Empty means we want to delete the configured value and fallback to the default value
                 String overriddenDefault = overriddenDefaults.get( setting );
-                oldDefault = overriddenDefault != null;
-                oldValue = oldDefault ? params.put( setting, overriddenDefault ) : params.remove( setting );
-                newValue = getConfiguredValueOf( setting );
-                newDefault = true;
+                boolean hasDefault = overriddenDefault != null;
+                oldValue = hasDefault ? params.put( setting, overriddenDefault ) : params.remove( setting );
+                newValue = getDefaultValueOf( setting );
+                newValueIsDefault = true;
             }
             else
             {
@@ -613,16 +625,24 @@ public class Config implements DiagnosticsProvider, Configuration
                     validator.validate( newEntry, ignore -> {} ); // Throws if invalid
                 }
 
-                oldValue = getConfiguredValueOf( setting );
-                if ( params.put( setting, update ) == null )
+                String previousValue = params.put( setting, update );
+                if ( previousValue != null )
                 {
-                    oldDefault = true;
+                    oldValue = previousValue;
+                }
+                else
+                {
+                    oldValue = getDefaultValueOf( setting );
+                    oldValueIsDefault = true;
                 }
                 newValue = update;
             }
+
+            String oldValueForLog = obsfucateIfSecret( setting, oldValue );
+            String newValueForLog = obsfucateIfSecret( setting, newValue );
             log.info( "Setting changed: '%s' changed from '%s' to '%s' via '%s'",
-                    setting, oldDefault ? "default (" + oldValue + ")" : oldValue,
-                    newDefault ? "default (" + newValue + ")" : newValue, origin );
+                    setting, oldValueIsDefault ? "default (" + oldValueForLog + ")" : oldValueForLog,
+                    newValueIsDefault ? "default (" + newValueForLog + ")" : newValueForLog, origin );
             updateListeners.getOrDefault( setting, emptyList() ).forEach( l -> l.accept( oldValue, newValue ) );
         }
     }
@@ -643,9 +663,17 @@ public class Config implements DiagnosticsProvider, Configuration
         }
     }
 
-    private String getConfiguredValueOf( String setting )
+    private String getDefaultValueOf( String setting )
     {
-        return getValue( setting ).map( Object::toString ).orElse( "<no default>" );
+        if ( overriddenDefaults.containsKey( setting ) )
+        {
+            return overriddenDefaults.get( setting );
+        }
+        if ( settingsMap.containsKey( setting ) )
+        {
+            return settingsMap.get( setting ).getDefaultValue();
+        }
+        return "<no default>";
     }
 
     private Optional<ConfigValue> findConfigValue( String setting )
@@ -720,8 +748,25 @@ public class Config implements DiagnosticsProvider, Configuration
             logger.log( "Neo4j Kernel properties:" );
             for ( Map.Entry<String,String> param : params.entrySet() )
             {
-                logger.log( "%s=%s", param.getKey(), param.getValue() );
+                logger.log( "%s=%s", param.getKey(), obsfucateIfSecret( param ) );
             }
+        }
+    }
+
+    private String obsfucateIfSecret( Map.Entry<String,String> param )
+    {
+        return obsfucateIfSecret( param.getKey(), param.getValue() );
+    }
+
+    private String obsfucateIfSecret( String key, String value )
+    {
+        if ( settingsMap.containsKey( key ) && settingsMap.get( key ).secret() )
+        {
+            return Secret.OBSFUCATED;
+        }
+        else
+        {
+            return value;
         }
     }
 
@@ -833,7 +878,7 @@ public class Config implements DiagnosticsProvider, Configuration
     private Stream<BoltConnector> boltConnectors( @Nonnull Map<String,String> params )
     {
         return allConnectorIdentifiers( params ).stream().map( BoltConnector::new ).filter(
-                c -> c.group.groupKey.equalsIgnoreCase( "bolt" ) || BOLT.equals( c.type.apply( params::get ) ) );
+                c -> c.group.groupKey.equalsIgnoreCase( "bolt" ) || BOLT == c.type.apply( params::get ) );
     }
 
     /**
@@ -875,7 +920,7 @@ public class Config implements DiagnosticsProvider, Configuration
                 .map( Connector::new )
                 .filter( c -> c.group.groupKey.equalsIgnoreCase( "http" ) ||
                         c.group.groupKey.equalsIgnoreCase( "https" ) ||
-                        HTTP.equals( c.type.apply( params::get ) ) )
+                        HTTP == c.type.apply( params::get ) )
                 .map( c ->
                 {
                     final String name = c.group.groupKey;
@@ -921,7 +966,7 @@ public class Config implements DiagnosticsProvider, Configuration
     {
         return params.entrySet().stream()
                 .sorted( Comparator.comparing( Map.Entry::getKey ) )
-                .map( entry -> entry.getKey() + "=" + entry.getValue() )
+                .map( entry -> entry.getKey() + "=" + obsfucateIfSecret( entry ) )
                 .collect( Collectors.joining( ", ") );
     }
 }

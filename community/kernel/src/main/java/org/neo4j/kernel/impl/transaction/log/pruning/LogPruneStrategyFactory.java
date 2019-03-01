@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,9 +19,8 @@
  */
 package org.neo4j.kernel.impl.transaction.log.pruning;
 
-import java.util.stream.LongStream;
-
 import java.time.Clock;
+import java.util.stream.LongStream;
 
 import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.kernel.impl.transaction.log.files.LogFiles;
@@ -49,7 +48,7 @@ public class LogPruneStrategyFactory
         }
     };
 
-    private LogPruneStrategyFactory()
+    public LogPruneStrategyFactory()
     {
     }
 
@@ -67,7 +66,7 @@ public class LogPruneStrategyFactory
      *   <li>1k hours - For keeping last 1000 hours worth of log data</li>
      * </ul>
      */
-    public static LogPruneStrategy fromConfigValue( FileSystemAbstraction fileSystem, LogFiles logFiles,
+    public LogPruneStrategy strategyFromConfigValue( FileSystemAbstraction fileSystem, LogFiles logFiles,
             Clock clock, String configValue )
     {
         ThresholdConfigValue value = parse( configValue );

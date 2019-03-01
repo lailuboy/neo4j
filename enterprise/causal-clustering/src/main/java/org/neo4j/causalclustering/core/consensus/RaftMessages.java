@@ -1,21 +1,24 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
- * This file is part of Neo4j.
- *
- * Neo4j is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
+ * This file is part of Neo4j Enterprise Edition. The included source
+ * code can be redistributed and/or modified under the terms of the
+ * GNU AFFERO GENERAL PUBLIC LICENSE Version 3
+ * (http://www.fsf.org/licensing/licenses/agpl-3.0.html) with the
+ * Commons Clause, as found in the associated LICENSE.txt file.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU Affero General Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Neo4j object code can be licensed independently from the source
+ * under separate terms from the AGPL. Inquiries can be directed to:
+ * licensing@neo4j.com
+ *
+ * More information is also available at:
+ * https://neo4j.com/licensing/
  */
 package org.neo4j.causalclustering.core.consensus;
 
@@ -141,9 +144,30 @@ public interface RaftMessages
         }
     }
 
+    interface AnyVote
+    {
+        interface Request
+        {
+            long term();
+
+            long lastLogTerm();
+
+            long lastLogIndex();
+
+            MemberId candidate();
+        }
+
+        interface Response
+        {
+            long term();
+
+            boolean voteGranted();
+        }
+    }
+
     interface Vote
     {
-        class Request extends BaseRaftMessage
+        class Request extends BaseRaftMessage implements AnyVote.Request
         {
             private long term;
             private MemberId candidate;
@@ -159,6 +183,7 @@ public interface RaftMessages
                 this.lastLogTerm = lastLogTerm;
             }
 
+            @Override
             public long term()
             {
                 return term;
@@ -205,23 +230,26 @@ public interface RaftMessages
                         from, term, candidate, lastLogIndex, lastLogTerm );
             }
 
+            @Override
             public long lastLogTerm()
             {
                 return lastLogTerm;
             }
 
+            @Override
             public long lastLogIndex()
             {
                 return lastLogIndex;
             }
 
+            @Override
             public MemberId candidate()
             {
                 return candidate;
             }
         }
 
-        class Response extends BaseRaftMessage
+        class Response extends BaseRaftMessage implements AnyVote.Response
         {
             private long term;
             private boolean voteGranted;
@@ -271,11 +299,13 @@ public interface RaftMessages
                 return format( "Vote.Response from %s {term=%d, voteGranted=%s}", from, term, voteGranted );
             }
 
+            @Override
             public long term()
             {
                 return term;
             }
 
+            @Override
             public boolean voteGranted()
             {
                 return voteGranted;
@@ -285,7 +315,7 @@ public interface RaftMessages
 
     interface PreVote
     {
-        class Request extends BaseRaftMessage
+        class Request extends BaseRaftMessage implements AnyVote.Request
         {
             private long term;
             private MemberId candidate;
@@ -301,6 +331,7 @@ public interface RaftMessages
                 this.lastLogTerm = lastLogTerm;
             }
 
+            @Override
             public long term()
             {
                 return term;
@@ -347,23 +378,26 @@ public interface RaftMessages
                         from, term, candidate, lastLogIndex, lastLogTerm );
             }
 
+            @Override
             public long lastLogTerm()
             {
                 return lastLogTerm;
             }
 
+            @Override
             public long lastLogIndex()
             {
                 return lastLogIndex;
             }
 
+            @Override
             public MemberId candidate()
             {
                 return candidate;
             }
         }
 
-        class Response extends BaseRaftMessage
+        class Response extends BaseRaftMessage implements AnyVote.Response
         {
             private long term;
             private boolean voteGranted;
@@ -413,11 +447,13 @@ public interface RaftMessages
                 return format( "PreVote.Response from %s {term=%d, voteGranted=%s}", from, term, voteGranted );
             }
 
+            @Override
             public long term()
             {
                 return term;
             }
 
+            @Override
             public boolean voteGranted()
             {
                 return voteGranted;
@@ -501,7 +537,7 @@ public interface RaftMessages
             @Override
             public int hashCode()
             {
-                return Objects.hash( leaderTerm, prevLogIndex, prevLogTerm, entries, leaderCommit );
+                return Objects.hash( leaderTerm, prevLogIndex, prevLogTerm, Arrays.hashCode( entries ), leaderCommit );
             }
 
             @Override
@@ -997,7 +1033,7 @@ public interface RaftMessages
             {
                 return false;
             }
-            ClusterIdAwareMessageImpl that = (ClusterIdAwareMessageImpl) o;
+            ClusterIdAwareMessageImpl<?> that = (ClusterIdAwareMessageImpl<?>) o;
             return Objects.equals( clusterId, that.clusterId ) && Objects.equals( message(), that.message() );
         }
 
@@ -1049,7 +1085,7 @@ public interface RaftMessages
             {
                 return false;
             }
-            ReceivedInstantAwareMessageImpl that = (ReceivedInstantAwareMessageImpl) o;
+            ReceivedInstantAwareMessageImpl<?> that = (ReceivedInstantAwareMessageImpl<?>) o;
             return Objects.equals( receivedAt, that.receivedAt ) && Objects.equals( message(), that.message() );
         }
 
@@ -1109,7 +1145,7 @@ public interface RaftMessages
             {
                 return false;
             }
-            ReceivedInstantClusterIdAwareMessageImpl that = (ReceivedInstantClusterIdAwareMessageImpl) o;
+            ReceivedInstantClusterIdAwareMessageImpl<?> that = (ReceivedInstantClusterIdAwareMessageImpl<?>) o;
             return Objects.equals( receivedAt, that.receivedAt ) && Objects.equals( clusterId, that.clusterId ) && Objects.equals( message(), that.message() );
         }
 

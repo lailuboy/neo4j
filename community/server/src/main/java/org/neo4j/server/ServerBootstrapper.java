@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -49,8 +49,8 @@ import static org.neo4j.commandline.Util.neo4jVersion;
 public abstract class ServerBootstrapper implements Bootstrapper
 {
     public static final int OK = 0;
-    public static final int WEB_SERVER_STARTUP_ERROR_CODE = 1;
-    public static final int GRAPH_DATABASE_STARTUP_ERROR_CODE = 2;
+    private static final int WEB_SERVER_STARTUP_ERROR_CODE = 1;
+    private static final int GRAPH_DATABASE_STARTUP_ERROR_CODE = 2;
     private static final String SIGTERM = "TERM";
     private static final String SIGINT = "INT";
 
@@ -83,7 +83,7 @@ public abstract class ServerBootstrapper implements Bootstrapper
     public final int start( File homeDir, Optional<File> configFile, Map<String, String> configOverrides )
     {
         addShutdownHook();
-        installSignalHandler();
+        installSignalHandlers();
         try
         {
             // Create config file from arguments
@@ -173,7 +173,7 @@ public abstract class ServerBootstrapper implements Bootstrapper
     private static LogProvider setupLogging( Config config )
     {
         LogProvider userLogProvider = FormattedLogProvider.withoutRenderingContext()
-                            .withZoneId( config.get( GraphDatabaseSettings.log_timezone ).getZoneId() )
+                            .withZoneId( config.get( GraphDatabaseSettings.db_timezone ).getZoneId() )
                             .withDefaultLogLevel( config.get( GraphDatabaseSettings.store_internal_log_level ) )
                             .toOutputStream( System.out );
         JULBridge.resetJUL();
@@ -184,31 +184,18 @@ public abstract class ServerBootstrapper implements Bootstrapper
     }
 
     // Exit gracefully if possible
-    private void installSignalHandler()
+    private void installSignalHandlers()
+    {
+        installSignalHandler( SIGTERM ); // SIGTERM is invoked when system service is stopped
+        installSignalHandler( SIGINT ); // SIGINT is invoked when user hits ctrl-c  when running `neo4j console`
+    }
+
+    private void installSignalHandler( String sig )
     {
         try
         {
-            /*
-             * We want to interrupt the main thread which has start()ed lifecycle instances that may be blocked
-             * somewhere. If we don't do that, then the JVM will hang on the final join() for non daemon threads.
-             */
-            Thread t = Thread.currentThread();
-            log.debug( "Installing signal handler to interrupt thread named " + t.getName() );
-            // SIGTERM is invoked when system service is stopped
-            Signal.handle( new Signal( SIGTERM ), signal ->
-            {
-                t.interrupt();
-                System.exit( 0 );
-            } );
-        }
-        catch ( Throwable e )
-        {
-            log.warn( "Unable to install signal handler. Exit code may not be 0 on graceful shutdown.", e );
-        }
-        try
-        {
-            // SIGINT is invoked when user hits ctrl-c  when running `neo4j console`
-            Signal.handle( new Signal( SIGINT ), signal -> System.exit( 0 ) );
+            // System.exit() will trigger the shutdown hook
+            Signal.handle( new Signal( sig ), signal -> System.exit( 0 ) );
         }
         catch ( Throwable e )
         {
@@ -219,18 +206,13 @@ public abstract class ServerBootstrapper implements Bootstrapper
 
     private void addShutdownHook()
     {
-        shutdownHook = new Thread()
-        {
-            @Override
-            public void run()
+        shutdownHook = new Thread( () -> {
+            log.info( "Neo4j Server shutdown initiated by request" );
+            if ( server != null )
             {
-                log.info( "Neo4j Server shutdown initiated by request" );
-                if ( server != null )
-                {
-                    server.stop();
-                }
+                server.stop();
             }
-        };
+        } );
         Runtime.getRuntime().addShutdownHook( shutdownHook );
     }
 

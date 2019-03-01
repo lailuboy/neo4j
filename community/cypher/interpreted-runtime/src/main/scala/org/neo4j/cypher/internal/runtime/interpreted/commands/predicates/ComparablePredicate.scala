@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -22,12 +22,12 @@ package org.neo4j.cypher.internal.runtime.interpreted.commands.predicates
 import org.neo4j.cypher.internal.runtime.interpreted.ExecutionContext
 import org.neo4j.cypher.internal.runtime.interpreted.commands.expressions.{Expression, Literal, Variable}
 import org.neo4j.cypher.internal.runtime.interpreted.pipes.QueryState
-import org.neo4j.values.AnyValues
+import org.neo4j.values.{AnyValues, Comparison}
 import org.neo4j.values.storable._
 
 abstract sealed class ComparablePredicate(val left: Expression, val right: Expression) extends Predicate {
 
-  def compare(comparisonResult: Int): Boolean
+  def compare(comparisonResult: Option[Int]): Option[Boolean]
 
   def isMatch(m: ExecutionContext, state: QueryState): Option[Boolean] = {
     val l = left(m, state)
@@ -37,12 +37,38 @@ abstract sealed class ComparablePredicate(val left: Expression, val right: Expre
     else (l, r) match {
       case (d: FloatingPointValue, _) if d.doubleValue().isNaN => None
       case (_, d: FloatingPointValue) if d.doubleValue().isNaN => None
-      case (n1: NumberValue, n2: NumberValue) => Some(compare(AnyValues.COMPARATOR.compare(n1, n2)))
-      case (n1: TextValue, n2: TextValue) => Some(compare(AnyValues.COMPARATOR.compare(n1, n2)))
-      case (n1: BooleanValue, n2: BooleanValue) => Some(compare(AnyValues.COMPARATOR.compare(n1, n2)))
+      case (n1: NumberValue, n2: NumberValue) => compare(undefinedToNone(AnyValues.TERNARY_COMPARATOR.ternaryCompare(n1, n2)))
+      case (n1: TextValue, n2: TextValue) => compare(undefinedToNone(AnyValues.TERNARY_COMPARATOR.ternaryCompare(n1, n2)))
+      case (n1: BooleanValue, n2: BooleanValue) => compare(undefinedToNone(AnyValues.TERNARY_COMPARATOR.ternaryCompare(n1, n2)))
+      case (n1: PointValue, n2: PointValue) => this match {
+          // The ternary comparator cannot handle the '='  part of the >= and <= cases, so we need to switch to the within function
+        case _: LessThanOrEqual => asOption(n1.withinRange(null, false, n2, true))
+        case _: GreaterThanOrEqual => asOption(n1.withinRange(n2, true, null, false))
+        case _: LessThan => asOption(n1.withinRange(null, false, n2, false))
+        case _: GreaterThan => asOption(n1.withinRange(n2, false, null, false))
+        case _ => compare(undefinedToNone(AnyValues.TERNARY_COMPARATOR.ternaryCompare(n1, n2)))
+      }
+      case (n1: DateValue, n2: DateValue) => compare(undefinedToNone(AnyValues.TERNARY_COMPARATOR.ternaryCompare(n1, n2)))
+      case (n1: LocalTimeValue, n2: LocalTimeValue) => compare(undefinedToNone(AnyValues.TERNARY_COMPARATOR.ternaryCompare(n1, n2)))
+      case (n1: TimeValue, n2: TimeValue) => compare(undefinedToNone(AnyValues.TERNARY_COMPARATOR.ternaryCompare(n1, n2)))
+      case (n1: LocalDateTimeValue, n2: LocalDateTimeValue) => compare(undefinedToNone(AnyValues.TERNARY_COMPARATOR.ternaryCompare(n1, n2)))
+      case (n1: DateTimeValue, n2: DateTimeValue) => compare(undefinedToNone(AnyValues.TERNARY_COMPARATOR.ternaryCompare(n1, n2)))
       case _ => None
     }
     res
+  }
+
+  private def asOption(result: Any): Option[Boolean] = result match {
+    case true => Some(true)
+    case false => Some(false)
+    case _ => None
+  }
+
+  private def undefinedToNone(comparison: Comparison): Option[Int] = comparison match {
+    case Comparison.UNDEFINED => None
+    case Comparison.GREATER_THAN_AND_EQUAL => None
+    case Comparison.SMALLER_THAN_AND_EQUAL => None
+    case _ => Some(comparison.value())
   }
 
   def sign: String
@@ -97,7 +123,7 @@ case class Equals(a: Expression, b: Expression) extends Predicate {
 
 case class LessThan(a: Expression, b: Expression) extends ComparablePredicate(a, b) {
 
-  def compare(comparisonResult: Int) = comparisonResult < 0
+  override def compare(comparisonResult: Option[Int]): Option[Boolean] = comparisonResult.map(_ < 0)
 
   def sign: String = "<"
 
@@ -106,7 +132,7 @@ case class LessThan(a: Expression, b: Expression) extends ComparablePredicate(a,
 
 case class GreaterThan(a: Expression, b: Expression) extends ComparablePredicate(a, b) {
 
-  def compare(comparisonResult: Int) = comparisonResult > 0
+  override def compare(comparisonResult: Option[Int]): Option[Boolean] = comparisonResult.map(_ > 0)
 
   def sign: String = ">"
 
@@ -115,7 +141,7 @@ case class GreaterThan(a: Expression, b: Expression) extends ComparablePredicate
 
 case class LessThanOrEqual(a: Expression, b: Expression) extends ComparablePredicate(a, b) {
 
-  def compare(comparisonResult: Int) = comparisonResult <= 0
+  override def compare(comparisonResult: Option[Int]): Option[Boolean] = comparisonResult.map(_ <= 0)
 
   def sign: String = "<="
 
@@ -124,7 +150,7 @@ case class LessThanOrEqual(a: Expression, b: Expression) extends ComparablePredi
 
 case class GreaterThanOrEqual(a: Expression, b: Expression) extends ComparablePredicate(a, b) {
 
-  def compare(comparisonResult: Int) = comparisonResult >= 0
+  override def compare(comparisonResult: Option[Int]): Option[Boolean] = comparisonResult.map(_ >= 0)
 
   def sign: String = ">="
 

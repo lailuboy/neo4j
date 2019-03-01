@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,7 +19,6 @@
  */
 package org.neo4j.bolt.v1.transport.integration;
 
-import org.apache.commons.lang3.SystemUtils;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -31,6 +30,7 @@ import org.junit.runners.Parameterized;
 import java.io.IOException;
 import java.util.Collection;
 
+import org.neo4j.bolt.v1.messaging.Neo4jPackV1;
 import org.neo4j.bolt.v1.transport.socket.client.SecureSocketConnection;
 import org.neo4j.bolt.v1.transport.socket.client.SecureWebSocketConnection;
 import org.neo4j.bolt.v1.transport.socket.client.TransportConnection;
@@ -38,6 +38,8 @@ import org.neo4j.function.Factory;
 import org.neo4j.kernel.configuration.BoltConnector;
 
 import static java.util.Arrays.asList;
+import static org.apache.commons.lang3.JavaVersion.JAVA_9;
+import static org.apache.commons.lang3.SystemUtils.isJavaVersionAtLeast;
 import static org.neo4j.bolt.v1.transport.integration.Neo4jWithSocket.DEFAULT_CONNECTOR_KEY;
 import static org.neo4j.kernel.configuration.BoltConnector.EncryptionLevel.DISABLED;
 
@@ -61,6 +63,7 @@ public class RejectTransportEncryptionIT
     public Exception expected;
 
     private TransportConnection client;
+    private TransportTestUtil util;
 
     @Parameterized.Parameters
     public static Collection<Object[]> transports()
@@ -72,8 +75,8 @@ public class RejectTransportEncryptionIT
                 },
                 new Object[]{
                         (Factory<TransportConnection>) SecureSocketConnection::new, new IOException(
-                        SystemUtils.IS_JAVA_9 ? "Remote host terminated the handshake"
-                                              : "Remote host closed connection during handshake" )
+                        isJavaVersionAtLeast( JAVA_9 ) ? "Remote host terminated the handshake"
+                                                       : "Remote host closed connection during handshake" )
 
                 } );
     }
@@ -82,6 +85,7 @@ public class RejectTransportEncryptionIT
     public void setup()
     {
         this.client = cf.newInstance();
+        this.util = new TransportTestUtil( new Neo4jPackV1() );
     }
 
     @After
@@ -98,6 +102,6 @@ public class RejectTransportEncryptionIT
     {
         exception.expect( expected.getClass() );
         exception.expectMessage( expected.getMessage() );
-        client.connect( server.lookupDefaultConnector() ).send( TransportTestUtil.acceptedVersions( 1, 0, 0, 0 ) );
+        client.connect( server.lookupDefaultConnector() ).send( util.acceptedVersions( 1, 0, 0, 0 ) );
     }
 }

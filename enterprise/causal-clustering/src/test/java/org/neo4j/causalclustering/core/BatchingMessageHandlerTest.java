@@ -1,23 +1,30 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
- * This file is part of Neo4j.
- *
- * Neo4j is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
+ * This file is part of Neo4j Enterprise Edition. The included source
+ * code can be redistributed and/or modified under the terms of the
+ * GNU AFFERO GENERAL PUBLIC LICENSE Version 3
+ * (http://www.fsf.org/licensing/licenses/agpl-3.0.html) with the
+ * Commons Clause, as found in the associated LICENSE.txt file.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU Affero General Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Neo4j object code can be licensed independently from the source
+ * under separate terms from the AGPL. Inquiries can be directed to:
+ * licensing@neo4j.com
+ *
+ * More information is also available at:
+ * https://neo4j.com/licensing/
  */
 package org.neo4j.causalclustering.core;
+
+import org.junit.Test;
+import org.mockito.ArgumentMatchers;
+import org.mockito.Mockito;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -26,10 +33,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.function.Function;
-
-import org.junit.Test;
-import org.mockito.Matchers;
-import org.mockito.Mockito;
 
 import org.neo4j.causalclustering.core.consensus.ContinuousJob;
 import org.neo4j.causalclustering.core.consensus.RaftMessages;
@@ -50,19 +53,19 @@ public class BatchingMessageHandlerTest
     private static final int QUEUE_SIZE = 64;
     private final Instant now = Instant.now();
     @SuppressWarnings( "unchecked" )
-    private LifecycleMessageHandler<RaftMessages.ReceivedInstantClusterIdAwareMessage> downstreamHandler = mock( LifecycleMessageHandler.class );
+    private LifecycleMessageHandler<RaftMessages.ReceivedInstantClusterIdAwareMessage<?>> downstreamHandler = mock( LifecycleMessageHandler.class );
     private ClusterId localClusterId = new ClusterId( UUID.randomUUID() );
     private ContinuousJob mockJob = mock( ContinuousJob.class );
-    private Function<Runnable,ContinuousJob> jobSchedulerFactory = ( Runnable ignored ) -> mockJob;
+    private Function<Runnable,ContinuousJob> jobSchedulerFactory = ignored -> mockJob;
 
     @Test
-    public void shouldInvokeInnerHandlerWhenRun() throws Throwable
+    public void shouldInvokeInnerHandlerWhenRun()
     {
         // given
         BatchingMessageHandler batchHandler = new BatchingMessageHandler(
                 downstreamHandler, QUEUE_SIZE, MAX_BATCH, jobSchedulerFactory, NullLogProvider.getInstance() );
 
-        RaftMessages.ReceivedInstantClusterIdAwareMessage message = RaftMessages.ReceivedInstantClusterIdAwareMessage.of(
+        RaftMessages.ReceivedInstantClusterIdAwareMessage<?> message = RaftMessages.ReceivedInstantClusterIdAwareMessage.of(
                 now, localClusterId, new RaftMessages.NewEntry.Request( null, null ) );
         batchHandler.handle( message );
         verifyZeroInteractions( downstreamHandler );
@@ -80,7 +83,7 @@ public class BatchingMessageHandlerTest
         // given
         BatchingMessageHandler batchHandler = new BatchingMessageHandler(
                 downstreamHandler, QUEUE_SIZE, MAX_BATCH, jobSchedulerFactory, NullLogProvider.getInstance() );
-        RaftMessages.ReceivedInstantClusterIdAwareMessage message = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
+        RaftMessages.ReceivedInstantClusterIdAwareMessage<?> message = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
                 new RaftMessages.NewEntry.Request( null, null ) );
 
         ExecutorService executor = Executors.newCachedThreadPool();
@@ -101,7 +104,7 @@ public class BatchingMessageHandlerTest
     }
 
     @Test
-    public void shouldBatchRequests() throws Throwable
+    public void shouldBatchRequests()
     {
         // given
         BatchingMessageHandler batchHandler = new BatchingMessageHandler(
@@ -126,7 +129,7 @@ public class BatchingMessageHandlerTest
     }
 
     @Test
-    public void shouldBatchUsingReceivedInstantOfFirstReceivedMessage() throws Throwable
+    public void shouldBatchUsingReceivedInstantOfFirstReceivedMessage()
     {
         // given
         BatchingMessageHandler batchHandler = new BatchingMessageHandler(
@@ -151,7 +154,7 @@ public class BatchingMessageHandlerTest
     }
 
     @Test
-    public void shouldBatchNewEntriesAndHandleOtherMessagesSingularly() throws Throwable
+    public void shouldBatchNewEntriesAndHandleOtherMessagesSingularly()
     {
         // given
         BatchingMessageHandler batchHandler = new BatchingMessageHandler(
@@ -160,13 +163,13 @@ public class BatchingMessageHandlerTest
         ReplicatedString contentA = new ReplicatedString( "A" );
         ReplicatedString contentC = new ReplicatedString( "C" );
 
-        RaftMessages.ReceivedInstantClusterIdAwareMessage messageA = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
+        RaftMessages.ReceivedInstantClusterIdAwareMessage<?> messageA = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
                 new RaftMessages.NewEntry.Request( null, contentA ) );
-        RaftMessages.ReceivedInstantClusterIdAwareMessage messageB = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
+        RaftMessages.ReceivedInstantClusterIdAwareMessage<?> messageB = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
                 new RaftMessages.Heartbeat( null, 0, 0, 0 ) );
-        RaftMessages.ReceivedInstantClusterIdAwareMessage messageC = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
+        RaftMessages.ReceivedInstantClusterIdAwareMessage<?> messageC = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
                 new RaftMessages.NewEntry.Request( null, contentC ) );
-        RaftMessages.ReceivedInstantClusterIdAwareMessage messageD = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
+        RaftMessages.ReceivedInstantClusterIdAwareMessage<?> messageD = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
                 new RaftMessages.Heartbeat( null, 1, 1, 1 ) );
 
         batchHandler.handle( messageA );
@@ -196,7 +199,7 @@ public class BatchingMessageHandlerTest
         BatchingMessageHandler batchHandler = new BatchingMessageHandler(
                 downstreamHandler, QUEUE_SIZE, MAX_BATCH, jobSchedulerFactory, logProvider );
 
-        RaftMessages.ReceivedInstantClusterIdAwareMessage message = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now,
+        RaftMessages.ReceivedInstantClusterIdAwareMessage<?> message = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now,
                 localClusterId, new RaftMessages.NewEntry.Request( null, null ) );
         batchHandler.stop();
 
@@ -205,7 +208,7 @@ public class BatchingMessageHandlerTest
         batchHandler.run();
 
         // then
-        verify( downstreamHandler, never() ).handle( Matchers.any( RaftMessages.ReceivedInstantClusterIdAwareMessage.class ) );
+        verify( downstreamHandler, never() ).handle( ArgumentMatchers.any( RaftMessages.ReceivedInstantClusterIdAwareMessage.class ) );
         logProvider.assertAtLeastOnce( AssertableLogProvider.inLog( BatchingMessageHandler.class )
                 .debug( "This handler has been stopped, dropping the message: %s", message ) );
     }
@@ -217,7 +220,7 @@ public class BatchingMessageHandlerTest
         int queueSize = 1;
         BatchingMessageHandler batchHandler = new BatchingMessageHandler(
                 downstreamHandler, queueSize, MAX_BATCH, jobSchedulerFactory, NullLogProvider.getInstance() );
-        RaftMessages.ReceivedInstantClusterIdAwareMessage message = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
+        RaftMessages.ReceivedInstantClusterIdAwareMessage<?> message = RaftMessages.ReceivedInstantClusterIdAwareMessage.of( now, localClusterId,
                 new RaftMessages.NewEntry.Request( null, null ) );
         batchHandler.handle( message ); // fill the queue
 

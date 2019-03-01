@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -32,90 +32,106 @@ import static org.neo4j.configuration.ConfigValue.valueToString;
 public class ConfigValueTest
 {
     @Test
-    public void handlesEmptyValue() throws Exception
+    public void handlesEmptyValue()
     {
         ConfigValue value = new ConfigValue( "name", Optional.empty(), Optional.empty(), Optional.empty(),
-                "description", false, false, false, Optional.empty() );
+                "description", false, false, false, Optional.empty(), false );
 
         assertEquals( Optional.empty(), value.value() );
         assertEquals( "null", value.toString() );
         assertFalse( value.deprecated() );
         assertEquals( Optional.empty(), value.replacement() );
         assertFalse( value.internal() );
+        assertFalse( value.secret() );
     }
 
     @Test
-    public void handlesInternal() throws Exception
+    public void handlesInternal()
     {
         ConfigValue value = new ConfigValue( "name", Optional.empty(), Optional.empty(), Optional.empty(),
-                "description", true, false, false,
-                Optional.empty() );
+                "description", true, false, false, Optional.empty(), false );
 
         assertTrue( value.internal() );
+        assertFalse( value.secret() );
     }
 
     @Test
-    public void handlesNonEmptyValue() throws Exception
+    public void handlesNonEmptyValue()
     {
         ConfigValue value = new ConfigValue( "name", Optional.empty(), Optional.empty(), Optional.of( 1 ),
-                "description", false, false, false, Optional.empty() );
+                "description", false, false, false, Optional.empty(), false );
 
         assertEquals( Optional.of( 1 ), value.value() );
         assertEquals( "1", value.toString() );
         assertFalse( value.deprecated() );
         assertEquals( Optional.empty(), value.replacement() );
         assertFalse( value.internal() );
+        assertFalse( value.secret() );
     }
 
     @Test
-    public void handlesDeprecationAndReplacement() throws Exception
+    public void handlesDeprecationAndReplacement()
     {
         ConfigValue value = new ConfigValue( "old_name", Optional.empty(), Optional.empty(), Optional.of( 1 ),
-                "description", false, false, true,
-                Optional.of( "new_name" ) );
+                "description", false, false, true, Optional.of( "new_name" ), false );
 
         assertEquals( Optional.of( 1 ), value.value() );
         assertEquals( "1", value.toString() );
         assertTrue( value.deprecated() );
         assertEquals( "new_name", value.replacement().get() );
         assertFalse( value.internal() );
+        assertFalse( value.secret() );
     }
 
     @Test
-    public void handlesValueDescription() throws Exception
+    public void handlesValueDescription()
     {
         ConfigValue value = new ConfigValue( "old_name", Optional.empty(), Optional.empty(), Optional.of( 1 ),
-                "a simple integer", false, false, true,
-                Optional.of( "new_name" ) );
+                "a simple integer", false, false, true, Optional.of( "new_name" ), false );
 
         assertEquals( Optional.of( 1 ), value.value() );
         assertEquals( "1", value.toString() );
         assertTrue( value.deprecated() );
         assertEquals( "new_name", value.replacement().get() );
         assertFalse( value.internal() );
+        assertFalse( value.secret() );
         assertEquals( "a simple integer", value.valueDescription() );
     }
 
     @Test
-    public void durationValueIsRepresentedWithUnit() throws Exception
+    public void handlesSecretValue() throws Exception
+    {
+        ConfigValue value = new ConfigValue( "name", Optional.empty(), Optional.empty(), Optional.of( "secret" ),
+                "description", false, false, false, Optional.empty(), true );
+
+        assertEquals( Optional.of( "secret" ), value.value() );
+        assertEquals( Secret.OBSFUCATED, value.toString() );
+        assertFalse( value.deprecated() );
+        assertEquals( Optional.empty(), value.replacement() );
+        assertFalse( value.internal() );
+        assertTrue( value.secret() );
+    }
+
+    @Test
+    public void durationValueIsRepresentedWithUnit()
     {
         assertEquals( "120000ms", valueToString( Duration.ofMinutes( 2 ) ) );
     }
 
     @Test
-    public void stringValueIsRepresentedAsString() throws Exception
+    public void stringValueIsRepresentedAsString()
     {
         assertEquals( "bob", valueToString( "bob" ) );
     }
 
     @Test
-    public void intValueIsRepresentedAsInt() throws Exception
+    public void intValueIsRepresentedAsInt()
     {
         assertEquals( "7", valueToString( 7 ) );
     }
 
     @Test
-    public void nullIsHandled() throws Exception
+    public void nullIsHandled()
     {
         assertEquals( "null", valueToString( null ) );
     }

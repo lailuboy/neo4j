@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -41,12 +41,12 @@ import org.neo4j.graphdb.factory.GraphDatabaseFactory;
 import org.neo4j.graphdb.schema.IndexDefinition;
 import org.neo4j.test.rule.TestDirectory;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.junit.Assert.assertThat;
 
 
 public class IndexValuesValidationTest
 {
-
     @ClassRule
     public static final TestDirectory directory = TestDirectory.testDirectory();
     @Rule
@@ -67,7 +67,7 @@ public class IndexValuesValidationTest
     }
 
     @Test
-    public void validateIndexedNodeProperties() throws Exception
+    public void validateIndexedNodeProperties()
     {
         Label label = Label.label( "indexedNodePropertiesTestLabel" );
         String propertyName = "indexedNodePropertyName";
@@ -80,8 +80,7 @@ public class IndexValuesValidationTest
         }
 
         expectedException.expect( IllegalArgumentException.class );
-        expectedException.expectMessage( "Property value bytes length: 32767 is longer then 32766, " +
-                "which is maximum supported length of indexed property value." );
+        expectedException.expectMessage( containsString( "Property value size is too large for index. Please see index documentation for limitations." ) );
 
         try ( Transaction transaction = database.beginTx() )
         {
@@ -117,9 +116,8 @@ public class IndexValuesValidationTest
             try ( Transaction ignored = database.beginTx() )
             {
                 String indexFailure = database.schema().getIndexFailure( indexDefinition );
-                assertThat( "", indexFailure, Matchers.startsWith( "java.lang.IllegalArgumentException: " +
-                        "Property value bytes length: 32767 is longer then 32766, " +
-                        "which is maximum supported length of indexed property value." ) );
+                assertThat( "", indexFailure, Matchers.containsString(
+                        "java.lang.IllegalArgumentException: Index key-value size it to large. Please see index documentation for limitations." ) );
             }
         }
     }
@@ -140,8 +138,7 @@ public class IndexValuesValidationTest
         }
 
         expectedException.expect( IllegalArgumentException.class );
-        expectedException.expectMessage( "Property value bytes length: 32767 is longer then 32766, " +
-                "which is maximum supported length of indexed property value." );
+        expectedException.expectMessage( "Property value size is too large for index. Please see index documentation for limitations." );
         try ( Transaction transaction = database.beginTx() )
         {
             Node node = database.createNode( label );
@@ -171,8 +168,7 @@ public class IndexValuesValidationTest
         }
 
         expectedException.expect( IllegalArgumentException.class );
-        expectedException.expectMessage( "Property value bytes length: 32767 is longer then 32766, " +
-                "which is maximum supported length of indexed property value." );
+        expectedException.expectMessage( "Property value size is too large for index. Please see index documentation for limitations." );
         try ( Transaction transaction = database.beginTx() )
         {
             Node source = database.createNode( label );

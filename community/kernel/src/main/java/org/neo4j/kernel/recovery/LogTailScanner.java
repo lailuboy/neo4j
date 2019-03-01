@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -20,8 +20,8 @@
 package org.neo4j.kernel.recovery;
 
 import java.io.IOException;
+import java.nio.channels.ClosedByInterruptException;
 
-import org.neo4j.helpers.Exceptions;
 import org.neo4j.kernel.impl.store.UnderlyingStorageException;
 import org.neo4j.kernel.impl.transaction.log.LogEntryCursor;
 import org.neo4j.kernel.impl.transaction.log.LogPosition;
@@ -39,6 +39,7 @@ import org.neo4j.kernel.impl.transaction.log.files.LogFiles;
 import org.neo4j.kernel.monitoring.Monitors;
 
 import static org.neo4j.kernel.impl.transaction.log.LogVersionRepository.INITIAL_LOG_VERSION;
+import static org.neo4j.kernel.recovery.Recovery.throwUnableToCleanRecover;
 
 /**
  * This class collects information about the latest entries in the transaction log. Since the only way we have to collect
@@ -133,12 +134,17 @@ public class LogTailScanner
                     corruptedTransactionLogs = true;
                 }
             }
+             catch ( Error | ClosedByInterruptException e )
+            {
+                // These should not be parsing errors
+                throw e;
+            }
             catch ( Throwable t )
             {
                 monitor.corruptedLogFile( version, t );
                 if ( failOnCorruptedLogFiles )
                 {
-                    throw Exceptions.launderedException( t );
+                    throwUnableToCleanRecover( t );
                 }
                 corruptedTransactionLogs = true;
             }

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -27,6 +27,7 @@ import org.neo4j.unsafe.impl.batchimport.Configuration;
 import org.neo4j.unsafe.impl.batchimport.executor.DynamicTaskExecutor;
 import org.neo4j.unsafe.impl.batchimport.executor.TaskExecutor;
 import org.neo4j.unsafe.impl.batchimport.stats.StatsProvider;
+import org.neo4j.util.VisibleForTesting;
 
 import static java.lang.System.currentTimeMillis;
 import static java.lang.System.nanoTime;
@@ -46,7 +47,6 @@ public abstract class ProcessorStep<T> extends AbstractStep<T>
     private TaskExecutor<Sender> executor;
     // max processors for this step, zero means unlimited, or rather config.maxNumberOfProcessors()
     private final int maxProcessors;
-    private final Configuration config;
 
     // Time stamp for when we processed the last queued batch received from upstream.
     // Useful for tracking how much time we spend waiting for batches from upstream.
@@ -56,7 +56,6 @@ public abstract class ProcessorStep<T> extends AbstractStep<T>
             StatsProvider... additionalStatsProviders )
     {
         super( control, name, config, additionalStatsProviders );
-        this.config = config;
         this.maxProcessors = maxProcessors;
     }
 
@@ -86,6 +85,7 @@ public abstract class ProcessorStep<T> extends AbstractStep<T>
                     // No batches were emitted so we couldn't track done batches in that way.
                     // We can see that we're the last step so increment here instead
                     doneBatches.incrementAndGet();
+                    control.recycle( batch );
                 }
                 totalProcessingTime.add( nanoTime() - startTime - sender.sendTime );
 
@@ -204,6 +204,12 @@ public abstract class ProcessorStep<T> extends AbstractStep<T>
 
     protected void lastCallForEmittingOutstandingBatches( BatchSender sender )
     {   // Nothing to emit, subclasses might have though
+    }
+
+    @VisibleForTesting
+    public int getMaxProcessors()
+    {
+        return maxProcessors;
     }
 
     private class Sender implements BatchSender

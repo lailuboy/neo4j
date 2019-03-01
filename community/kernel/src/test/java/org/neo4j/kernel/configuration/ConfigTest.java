@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,6 +19,7 @@
  */
 package org.neo4j.kernel.configuration;
 
+import org.hamcrest.CoreMatchers;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -39,6 +40,7 @@ import org.neo4j.configuration.Dynamic;
 import org.neo4j.configuration.Internal;
 import org.neo4j.configuration.LoadableConfig;
 import org.neo4j.configuration.ReplacedBy;
+import org.neo4j.configuration.Secret;
 import org.neo4j.graphdb.config.InvalidSettingException;
 import org.neo4j.graphdb.config.Setting;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
@@ -48,6 +50,7 @@ import org.neo4j.test.rule.TestDirectory;
 import static java.util.Collections.singletonList;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
@@ -64,7 +67,6 @@ import static org.neo4j.kernel.configuration.Settings.setting;
 
 public class ConfigTest
 {
-
     private static final String ORIGIN = "test";
 
     public static class MyMigratingSettings implements LoadableConfig
@@ -104,6 +106,9 @@ public class ConfigTest
 
         @Deprecated
         public static final Setting<String> oldSetting = setting( "some_setting", STRING, "Has no replacement" );
+
+        @Secret
+        public static final Setting<String> password = setting( "password", STRING, "This text should not appear in logs or toString" );
     }
 
     private static class HelloHasToBeNeo4jConfigurationValidator implements ConfigurationValidator
@@ -166,7 +171,7 @@ public class ConfigTest
     }
 
     @Test
-    public void shouldBeAbleToAugmentConfig() throws Exception
+    public void shouldBeAbleToAugmentConfig()
     {
         // Given
         Config config = Config();
@@ -181,7 +186,7 @@ public class ConfigTest
     }
 
     @Test
-    public void augmentAnotherConfig() throws Exception
+    public void augmentAnotherConfig()
     {
         Config config = Config();
         config.augment( MySettingsWithDefaults.hello, "Hi" );
@@ -248,14 +253,13 @@ public class ConfigTest
 
     @Test
     public void shouldSetInternalParameter()
-            throws Exception
     {
         // Given
         Config config = Config.builder()
-                              .withSetting( MySettingsWithDefaults.secretSetting, "false" )
-                              .withSetting( MySettingsWithDefaults.hello, "ABC" )
-                              .withConfigClasses( Arrays.asList( mySettingsWithDefaults, myMigratingSettings ) )
-                              .build();
+                .withSetting( MySettingsWithDefaults.secretSetting, "false" )
+                .withSetting( MySettingsWithDefaults.hello, "ABC" )
+                .withConfigClasses( Arrays.asList( mySettingsWithDefaults, myMigratingSettings ) )
+                .build();
 
         // Then
         assertTrue( config.getConfigValues().get( MySettingsWithDefaults.secretSetting.name() ).internal() );
@@ -263,8 +267,26 @@ public class ConfigTest
     }
 
     @Test
+    public void shouldSetSecretParameter()
+    {
+        // Given
+        Config config = Config.builder()
+                .withSetting( MySettingsWithDefaults.password, "this should not be visible" )
+                .withSetting( MySettingsWithDefaults.hello, "ABC" )
+                .withConfigClasses( Arrays.asList( mySettingsWithDefaults, myMigratingSettings ) )
+                .build();
+
+        // Then
+        assertTrue( config.getConfigValues().get( MySettingsWithDefaults.password.name() ).secret() );
+        assertFalse( config.getConfigValues().get( MySettingsWithDefaults.hello.name() ).secret() );
+        String configText = config.toString();
+        assertTrue( configText.contains( Secret.OBSFUCATED ) );
+        assertFalse( configText.contains( "this should not be visible" ) );
+        assertFalse( configText.contains( config.get( MySettingsWithDefaults.password ) ) );
+    }
+
+    @Test
     public void shouldSetDocumentedDefaultValue()
-            throws Exception
     {
         // Given
         Config config = Config.builder()
@@ -282,7 +304,7 @@ public class ConfigTest
     }
 
     @Test
-    public void validatorsShouldBeCalledWhenBuilding() throws Exception
+    public void validatorsShouldBeCalledWhenBuilding()
     {
         // Should not throw
         Config.builder()
@@ -326,7 +348,7 @@ public class ConfigTest
     }
 
     @Test
-    public void isConfigured() throws Exception
+    public void isConfigured()
     {
         Config config = Config();
         assertFalse( config.isConfigured( MySettingsWithDefaults.hello ) );
@@ -335,7 +357,7 @@ public class ConfigTest
     }
 
     @Test
-    public void isConfiguredShouldNotReturnTrueEvenThoughDefaultValueExists() throws Exception
+    public void isConfiguredShouldNotReturnTrueEvenThoughDefaultValueExists()
     {
         Config config = Config();
         assertFalse( config.isConfigured( MySettingsWithDefaults.hello ) );
@@ -343,7 +365,7 @@ public class ConfigTest
     }
 
     @Test
-    public void withConnectorsDisabled() throws Exception
+    public void withConnectorsDisabled()
     {
         Connector httpConnector = new HttpConnector();
         Connector boltConnector = new BoltConnector();
@@ -358,7 +380,7 @@ public class ConfigTest
     }
 
     @Test
-    public void augmentDefaults() throws Exception
+    public void augmentDefaults()
     {
         Config config = Config();
         assertEquals( "Hello, World!", config.get( MySettingsWithDefaults.hello ) );
@@ -370,10 +392,14 @@ public class ConfigTest
     {
         @Dynamic
         public static final Setting<Boolean> boolSetting = setting( "bool_setting", BOOLEAN, Settings.TRUE );
+
+        @Dynamic
+        @Secret
+        public static final Setting<String> secretSetting = setting( "password", STRING, "secret" );
     }
 
     @Test
-    public void updateDynamicShouldLogChanges() throws Exception
+    public void updateDynamicShouldLogChanges()
     {
         String settingName = MyDynamicSettings.boolSetting.name();
         String changedMessage = "Setting changed: '%s' changed from '%s' to '%s' via '%s'";
@@ -394,7 +420,7 @@ public class ConfigTest
     }
 
     @Test
-    public void updateDynamicShouldThrowIfSettingIsNotDynamic() throws Exception
+    public void updateDynamicShouldThrowIfSettingIsNotDynamic()
     {
         Config config = Config.builder().withConfigClasses( singletonList( mySettingsWithDefaults ) ).build();
         expect.expect( IllegalArgumentException.class );
@@ -402,7 +428,7 @@ public class ConfigTest
     }
 
     @Test
-    public void updateDynamicShouldInformRegisteredListeners() throws Exception
+    public void updateDynamicShouldInformRegisteredListeners()
     {
         Config config = Config.builder().withConfigClasses( singletonList( new MyDynamicSettings() ) ).build();
         AtomicInteger counter = new AtomicInteger( 0 );
@@ -417,7 +443,7 @@ public class ConfigTest
     }
 
     @Test
-    public void updateDynamicShouldNotAllowInvalidSettings() throws Exception
+    public void updateDynamicShouldNotAllowInvalidSettings()
     {
         Config config = Config.builder().withConfigClasses( singletonList( new MyDynamicSettings() ) ).build();
         expect.expect( InvalidSettingException.class );
@@ -425,7 +451,7 @@ public class ConfigTest
     }
 
     @Test
-    public void registeringUpdateListenerOnNonDynamicSettingMustThrow() throws Exception
+    public void registeringUpdateListenerOnNonDynamicSettingMustThrow()
     {
         Config config = Config.builder().withConfigClasses( singletonList( mySettingsWithDefaults ) ).build();
         expect.expect( IllegalArgumentException.class );
@@ -433,7 +459,7 @@ public class ConfigTest
     }
 
     @Test
-    public void updateDynamicShouldLogExceptionsFromUpdateListeners() throws Exception
+    public void updateDynamicShouldLogExceptionsFromUpdateListeners()
     {
         Config config = Config.builder().withConfigClasses( singletonList( new MyDynamicSettings() ) ).build();
         IllegalStateException exception = new IllegalStateException( "Boo" );
@@ -449,5 +475,40 @@ public class ConfigTest
 
         verify( log ).error( "Failure when notifying listeners after dynamic setting change; " +
                              "new setting might not have taken effect: Boo", exception );
+    }
+
+    @Test
+    public void updateDynamicShouldWorkWithSecret() throws Exception
+    {
+        // Given a secret dynamic setting with a registered update listener
+        String settingName = MyDynamicSettings.secretSetting.name();
+        String changedMessage = "Setting changed: '%s' changed from '%s' to '%s' via '%s'";
+        Config config = Config.builder().withConfigClasses( singletonList( new MyDynamicSettings() ) ).build();
+
+        Log log = mock( Log.class );
+        config.setLogger( log );
+
+        AtomicInteger counter = new AtomicInteger( 0 );
+        config.registerDynamicUpdateListener( MyDynamicSettings.secretSetting, ( previous, update ) ->
+        {
+            counter.getAndIncrement();
+            assertThat( "Update listener should not see obsfucated secret", previous, not( CoreMatchers.equalTo( Secret.OBSFUCATED ) ) );
+            assertThat( "Update listener should not see obsfucated secret", update, not( CoreMatchers.equalTo( Secret.OBSFUCATED ) ) );
+        } );
+
+        // When changing secret settings three times
+        config.updateDynamicSetting( settingName, "another", ORIGIN );
+        config.updateDynamicSetting( settingName, "secret2", ORIGIN );
+        config.updateDynamicSetting( settingName, "", ORIGIN );
+
+        // Then we should see obsfucated log messages
+        InOrder order = inOrder( log );
+        order.verify( log ).info( changedMessage, settingName, "default (" + Secret.OBSFUCATED + ")", Secret.OBSFUCATED, ORIGIN );
+        order.verify( log ).info( changedMessage, settingName, Secret.OBSFUCATED, Secret.OBSFUCATED, ORIGIN );
+        order.verify( log ).info( changedMessage, settingName, Secret.OBSFUCATED, "default (" + Secret.OBSFUCATED + ")", ORIGIN );
+        verifyNoMoreInteractions( log );
+
+        // And see 3 calls to the update listener
+        assertThat( counter.get(), is( 3 ) );
     }
 }

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,11 +19,13 @@
  */
 package org.neo4j.kernel.api.txstate;
 
-import org.neo4j.kernel.api.schema.LabelSchemaDescriptor;
-import org.neo4j.kernel.api.schema.constaints.ConstraintDescriptor;
+import javax.annotation.Nullable;
+
+import org.neo4j.internal.kernel.api.schema.SchemaDescriptor;
+import org.neo4j.internal.kernel.api.schema.constraints.ConstraintDescriptor;
+import org.neo4j.kernel.api.index.IndexProvider;
 import org.neo4j.kernel.api.schema.constaints.IndexBackedConstraintDescriptor;
-import org.neo4j.kernel.api.schema.index.IndexDescriptor;
-import org.neo4j.storageengine.api.txstate.PropertyContainerState;
+import org.neo4j.kernel.api.schema.index.SchemaIndexDescriptor;
 import org.neo4j.storageengine.api.txstate.ReadableTransactionState;
 import org.neo4j.values.storable.Value;
 import org.neo4j.values.storable.ValueTuple;
@@ -58,17 +60,15 @@ public interface TransactionState extends ReadableTransactionState
 
     void graphDoReplaceProperty( int propertyKeyId, Value replacedValue, Value newValue );
 
-    void nodeDoRemoveProperty( long nodeId, int propertyKeyId, Value removedValue );
+    void nodeDoRemoveProperty( long nodeId, int propertyKeyId );
 
-    void relationshipDoRemoveProperty( long relationshipId, int propertyKeyId, Value removedValue );
+    void relationshipDoRemoveProperty( long relationshipId, int propertyKeyId );
 
-    void graphDoRemoveProperty( int propertyKeyId, Value removedValue );
+    void graphDoRemoveProperty( int propertyKeyId );
 
     void nodeDoAddLabel( int labelId, long nodeId );
 
     void nodeDoRemoveLabel( int labelId, long nodeId );
-
-    void registerProperties( long ref, PropertyContainerState state );
 
     // TOKEN RELATED
 
@@ -80,11 +80,18 @@ public interface TransactionState extends ReadableTransactionState
 
     // SCHEMA RELATED
 
-    void indexRuleDoAdd( IndexDescriptor descriptor );
+    /**
+     * Adds transaction state about creating an index rule.
+     *
+     * @param descriptor {@link SchemaIndexDescriptor} for the index to be created.
+     * @param providerDescriptor specific {@link IndexProvider.Descriptor} to use for this index to be created.
+     * This provider descriptor is allowed to be null, which will be interpreted as simply using the default instead.
+     */
+    void indexRuleDoAdd( SchemaIndexDescriptor descriptor, @Nullable IndexProvider.Descriptor providerDescriptor );
 
-    void indexDoDrop( IndexDescriptor descriptor );
+    void indexDoDrop( SchemaIndexDescriptor descriptor );
 
-    boolean indexDoUnRemove( IndexDescriptor constraint );
+    boolean indexDoUnRemove( SchemaIndexDescriptor constraint );
 
     void constraintDoAdd( ConstraintDescriptor constraint );
 
@@ -94,6 +101,6 @@ public interface TransactionState extends ReadableTransactionState
 
     boolean constraintDoUnRemove( ConstraintDescriptor constraint );
 
-    void indexDoUpdateEntry( LabelSchemaDescriptor descriptor, long nodeId, ValueTuple before, ValueTuple after );
+    void indexDoUpdateEntry( SchemaDescriptor descriptor, long nodeId, ValueTuple before, ValueTuple after );
 
 }

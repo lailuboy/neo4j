@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -29,6 +29,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 
 import org.neo4j.kernel.api.index.ArrayEncoder;
+import org.neo4j.values.storable.PointValue;
 import org.neo4j.values.storable.Value;
 import org.neo4j.values.storable.Values;
 
@@ -38,12 +39,12 @@ import static org.apache.lucene.document.Field.Store.NO;
  * Enumeration representing all possible property types with corresponding encodings and query structures for Lucene
  * schema indexes.
  */
-enum ValueEncoding
+public enum ValueEncoding
 {
     Number
             {
                 @Override
-                String key()
+                public String key()
                 {
                     return "number";
                 }
@@ -77,7 +78,7 @@ enum ValueEncoding
     Array
             {
                 @Override
-                String key()
+                public String key()
                 {
                     return "array";
                 }
@@ -110,7 +111,7 @@ enum ValueEncoding
     Bool
             {
                 @Override
-                String key()
+                public String key()
                 {
                     return "bool";
                 }
@@ -140,10 +141,79 @@ enum ValueEncoding
                             new TermQuery( new Term( key( propertyNumber ), value.prettyPrint() ) ) );
                 }
             },
+    Spatial
+            {
+                @Override
+                public String key()
+                {
+                    return "spatial";
+                }
+
+                @Override
+                boolean canEncode( Value value )
+                {
+                    return Values.isGeometryValue( value );
+                }
+
+                @Override
+                Field encodeField( String name, Value value )
+                {
+                    PointValue pointVal = (PointValue) value;
+                    return stringField( name, pointVal.toIndexableString() );
+                }
+
+                @Override
+                void setFieldValue( Value value, Field field )
+                {
+                    PointValue pointVal = (PointValue) value;
+                    field.setStringValue( pointVal.toIndexableString() );
+                }
+
+                @Override
+                Query encodeQuery( Value value, int propertyNumber )
+                {
+                    PointValue pointVal = (PointValue) value;
+                    return new ConstantScoreQuery(
+                            new TermQuery( new Term( key( propertyNumber ), pointVal.toIndexableString() ) ) );
+                }
+            },
+    Temporal
+            {
+                @Override
+                public String key()
+                {
+                    return "temporal";
+                }
+
+                @Override
+                boolean canEncode( Value value )
+                {
+                    return Values.isTemporalValue( value );
+                }
+
+                @Override
+                Field encodeField( String name, Value value )
+                {
+                    return stringField( name, value.prettyPrint() );
+                }
+
+                @Override
+                void setFieldValue( Value value, Field field )
+                {
+                    field.setStringValue( value.prettyPrint() );
+                }
+
+                @Override
+                Query encodeQuery( Value value, int propertyNumber )
+                {
+                    return new ConstantScoreQuery(
+                            new TermQuery( new Term( key( propertyNumber ), value.prettyPrint() ) ) );
+                }
+            },
     String
             {
                 @Override
-                String key()
+                public String key()
                 {
                     return "string";
                 }
@@ -177,7 +247,7 @@ enum ValueEncoding
 
     private static final ValueEncoding[] AllEncodings = values();
 
-    abstract String key();
+    public  abstract String key();
 
     String key( int propertyNumber )
     {

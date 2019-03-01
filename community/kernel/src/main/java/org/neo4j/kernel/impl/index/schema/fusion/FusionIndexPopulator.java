@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -28,115 +28,102 @@ import org.neo4j.kernel.api.index.IndexEntryUpdate;
 import org.neo4j.kernel.api.index.IndexPopulator;
 import org.neo4j.kernel.api.index.IndexUpdater;
 import org.neo4j.kernel.api.index.PropertyAccessor;
-import org.neo4j.kernel.impl.index.schema.fusion.FusionSchemaIndexProvider.DropAction;
-import org.neo4j.kernel.impl.index.schema.fusion.FusionSchemaIndexProvider.Selector;
+import org.neo4j.kernel.impl.index.schema.fusion.FusionIndexProvider.DropAction;
 import org.neo4j.storageengine.api.schema.IndexSample;
 
-import static org.neo4j.kernel.impl.index.schema.fusion.FusionSchemaIndexProvider.combineSamples;
+import static org.neo4j.kernel.impl.index.schema.fusion.FusionIndexSampler.combineSamples;
+import static org.neo4j.kernel.impl.index.schema.fusion.SlotSelector.INSTANCE_COUNT;
 
-class FusionIndexPopulator implements IndexPopulator
+class FusionIndexPopulator extends FusionIndexBase<IndexPopulator> implements IndexPopulator
 {
-    private final IndexPopulator nativePopulator;
-    private final IndexPopulator lucenePopulator;
-    private final Selector selector;
     private final long indexId;
     private final DropAction dropAction;
+    private final boolean archiveFailedIndex;
 
-    FusionIndexPopulator( IndexPopulator nativePopulator, IndexPopulator lucenePopulator, Selector selector,
-            long indexId, DropAction dropAction )
+    FusionIndexPopulator( SlotSelector slotSelector, InstanceSelector<IndexPopulator> instanceSelector, long indexId, DropAction dropAction,
+            boolean archiveFailedIndex )
     {
-        this.nativePopulator = nativePopulator;
-        this.lucenePopulator = lucenePopulator;
-        this.selector = selector;
+        super( slotSelector, instanceSelector );
         this.indexId = indexId;
         this.dropAction = dropAction;
+        this.archiveFailedIndex = archiveFailedIndex;
     }
 
     @Override
     public void create() throws IOException
     {
-        nativePopulator.create();
-        lucenePopulator.create();
+        dropAction.drop( indexId, archiveFailedIndex );
+        instanceSelector.forAll( IndexPopulator::create );
     }
 
     @Override
     public void drop() throws IOException
     {
-        try
-        {
-            nativePopulator.drop();
-        }
-        finally
-        {
-            lucenePopulator.drop();
-        }
+        instanceSelector.forAll( IndexPopulator::drop );
         dropAction.drop( indexId );
     }
 
     @Override
     public void add( Collection<? extends IndexEntryUpdate<?>> updates ) throws IndexEntryConflictException, IOException
     {
-        Collection<IndexEntryUpdate<?>> luceneBatch = new ArrayList<>();
-        Collection<IndexEntryUpdate<?>> nativeBatch = new ArrayList<>();
+        LazyInstanceSelector<Collection<IndexEntryUpdate<?>>> batchSelector =
+                new LazyInstanceSelector<>( new Collection[INSTANCE_COUNT], slot -> new ArrayList<>() );
         for ( IndexEntryUpdate<?> update : updates )
         {
-            selector.select( nativeBatch, luceneBatch, update.values() ).add( update );
+            batchSelector.select( slotSelector.selectSlot( update.values(), GROUP_OF ) ).add( update );
         }
-        lucenePopulator.add( luceneBatch );
-        nativePopulator.add( nativeBatch );
+
+        // Manual loop due do multiple exception types
+        for ( int slot = 0; slot < INSTANCE_COUNT; slot++ )
+        {
+            Collection<IndexEntryUpdate<?>> batch = batchSelector.getIfInstantiated( slot );
+            if ( batch != null )
+            {
+                this.instanceSelector.select( slot ).add( batch );
+            }
+        }
     }
 
     @Override
     public void verifyDeferredConstraints( PropertyAccessor propertyAccessor )
             throws IndexEntryConflictException, IOException
     {
-        nativePopulator.verifyDeferredConstraints( propertyAccessor );
-        lucenePopulator.verifyDeferredConstraints( propertyAccessor );
+        // Manual loop due do multiple exception types
+        for ( int slot = 0; slot < INSTANCE_COUNT; slot++ )
+        {
+            instanceSelector.select( slot ).verifyDeferredConstraints( propertyAccessor );
+        }
     }
 
     @Override
-    public IndexUpdater newPopulatingUpdater( PropertyAccessor accessor ) throws IOException
+    public IndexUpdater newPopulatingUpdater( PropertyAccessor accessor )
     {
-        return new FusionIndexUpdater(
-                nativePopulator.newPopulatingUpdater( accessor ),
-                lucenePopulator.newPopulatingUpdater( accessor ), selector );
+        LazyInstanceSelector<IndexUpdater> updaterSelector =
+                new LazyInstanceSelector<>( new IndexUpdater[INSTANCE_COUNT], slot -> instanceSelector.select( slot ).newPopulatingUpdater( accessor ) );
+        return new FusionIndexUpdater( slotSelector, updaterSelector );
     }
 
     @Override
     public void close( boolean populationCompletedSuccessfully ) throws IOException
     {
-        try
-        {
-            nativePopulator.close( populationCompletedSuccessfully );
-        }
-        finally
-        {
-            lucenePopulator.close( populationCompletedSuccessfully );
-        }
+        instanceSelector.close( populator -> populator.close( populationCompletedSuccessfully ) );
     }
 
     @Override
     public void markAsFailed( String failure ) throws IOException
     {
-        try
-        {
-            nativePopulator.markAsFailed( failure );
-        }
-        finally
-        {
-            lucenePopulator.markAsFailed( failure );
-        }
+        instanceSelector.forAll( populator -> populator.markAsFailed( failure ) );
     }
 
     @Override
     public void includeSample( IndexEntryUpdate<?> update )
     {
-        selector.select( nativePopulator, lucenePopulator, update.values() ).includeSample( update );
+        instanceSelector.select( slotSelector.selectSlot( update.values(), GROUP_OF ) ).includeSample( update );
     }
 
     @Override
     public IndexSample sampleResult()
     {
-        return combineSamples( nativePopulator.sampleResult(), lucenePopulator.sampleResult() );
+        return combineSamples( instanceSelector.instancesAs( new IndexSample[INSTANCE_COUNT], IndexPopulator::sampleResult ) );
     }
 }

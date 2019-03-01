@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -130,6 +130,12 @@ public class ServerSettings implements LoadableConfig
             },
             EMPTY );
 
+    @Description( "Value of the Access-Control-Allow-Origin header sent over any HTTP or HTTPS " +
+            "connector. This defaults to '*', which allows broadest compatibility. Note " +
+            "that any URI provided here limits HTTP/HTTPS access to that URI only." )
+    public static final Setting<String> http_access_control_allow_origin =
+            setting( "dbms.security.http_access_control_allow_origin", STRING, "*" );
+
     @Description( "Enable HTTP request logging." )
     public static final Setting<Boolean> http_logging_enabled = setting( "dbms.logs.http.enabled", BOOLEAN, FALSE );
 
@@ -180,6 +186,12 @@ public class ServerSettings implements LoadableConfig
     public static final Setting<Duration> transaction_idle_timeout = setting( "dbms.rest.transaction.idle_timeout",
             DURATION, "60s" );
 
+    @Description( "Value of the HTTP Strict-Transport-Security (HSTS) response header. " +
+                  "This header tells browsers that a webpage should only be accessed using HTTPS instead of HTTP. It is attached to every HTTPS response. " +
+                  "Setting is not set by default so 'Strict-Transport-Security' header is not sent. " +
+                  "Value is expected to contain dirictives like 'max-age', 'includeSubDomains' and 'preload'." )
+    public static final Setting<String> http_strict_transport_security = setting( "dbms.security.http_strict_transport_security", STRING, NO_DEFAULT );
+
     @SuppressWarnings( "unused" ) // accessed from the browser
     @Description( "Commands to be run when Neo4j Browser successfully connects to this server. Separate multiple " +
                   "commands with semi-colon." )
@@ -203,6 +215,14 @@ public class ServerSettings implements LoadableConfig
     @Internal
     public static final Setting<URI> browser_path = setting( "unsupported.dbms.uris.browser", Settings.URI, "/browser/" );
 
+    @Deprecated
+    @Description( "Whether to allow executing scripts inside the server, from external sources, e.g. via traversal " +
+                  "endpoints. This setting is in the 'unsupported' namespace, because the scripting feature will be " +
+                  "removed entirely in a future release." )
+    public static final Setting<Boolean> script_enabled =
+            setting( "unsupported.dbms.security.script_enabled", BOOLEAN, FALSE );
+
+    @Deprecated
     @Internal
     public static final Setting<Boolean> script_sandboxing_enabled =
             setting( "unsupported.dbms.security.script_sandboxing_enabled", BOOLEAN, TRUE );

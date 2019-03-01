@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -20,12 +20,13 @@
 package org.neo4j.index.internal.gbptree;
 
 import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.neo4j.helpers.Exceptions;
 import org.neo4j.index.internal.gbptree.GBPTree.Monitor;
 import org.neo4j.io.pagecache.PageCursor;
 import org.neo4j.io.pagecache.PagedFile;
@@ -34,23 +35,21 @@ import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.System.currentTimeMillis;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.neo4j.helpers.Exceptions.launderedException;
 
 /**
  * Scans the entire tree and checks all GSPPs, replacing all CRASH gen GSPs with zeros.
  */
 class CrashGenerationCleaner
 {
+    private static final long MIN_BATCH_SIZE = 10;
+    static final long MAX_BATCH_SIZE = 1000;
     private final PagedFile pagedFile;
     private final TreeNode<?,?> treeNode;
     private final long lowTreeNodeId;
     private final long highTreeNodeId;
-    private final int availableProcessors;
-    private final long batchSize;
     private final long stableGeneration;
     private final long unstableGeneration;
     private final Monitor monitor;
-    private final long internalMaxKeyCount;
 
     CrashGenerationCleaner( PagedFile pagedFile, TreeNode<?,?> treeNode, long lowTreeNodeId, long highTreeNodeId,
             long stableGeneration, long unstableGeneration, Monitor monitor )
@@ -59,44 +58,48 @@ class CrashGenerationCleaner
         this.treeNode = treeNode;
         this.lowTreeNodeId = lowTreeNodeId;
         this.highTreeNodeId = highTreeNodeId;
-        this.availableProcessors = Runtime.getRuntime().availableProcessors();
-        this.batchSize = // Each processor will get roughly 100 batches each
-                min( 1000, max( 10, (highTreeNodeId - lowTreeNodeId) / (100 * availableProcessors) ) );
         this.stableGeneration = stableGeneration;
         this.unstableGeneration = unstableGeneration;
         this.monitor = monitor;
-        this.internalMaxKeyCount = treeNode.internalMaxKeyCount();
+    }
+
+    static long batchSize( long pagesToClean, int threads )
+    {
+        // Batch size at most maxBatchSize, at least minBatchSize and trying to give each thread 100 batches each
+        return min( MAX_BATCH_SIZE, max( MIN_BATCH_SIZE, pagesToClean / (100 * threads) ) );
     }
 
     // === Methods about the execution and threading ===
 
-    public void clean() throws IOException
+    public void clean( ExecutorService executor )
     {
-        assert unstableGeneration > stableGeneration;
-        assert unstableGeneration - stableGeneration > 1;
+        monitor.cleanupStarted();
+        assert unstableGeneration > stableGeneration : unexpectedGenerations();
+        assert unstableGeneration - stableGeneration > 1 : unexpectedGenerations();
 
         long startTime = currentTimeMillis();
-        int threads = availableProcessors;
-        ExecutorService executor = Executors.newFixedThreadPool( threads );
+        long pagesToClean = highTreeNodeId - lowTreeNodeId;
+        int threads = Runtime.getRuntime().availableProcessors();
+        long batchSize = batchSize( pagesToClean, threads );
         AtomicLong nextId = new AtomicLong( lowTreeNodeId );
         AtomicReference<Throwable> error = new AtomicReference<>();
         AtomicInteger cleanedPointers = new AtomicInteger();
+        CountDownLatch activeThreadLatch = new CountDownLatch( threads );
         for ( int i = 0; i < threads; i++ )
         {
-            executor.submit( cleaner( nextId, error, cleanedPointers ) );
+            executor.submit( cleaner( nextId, batchSize, cleanedPointers, activeThreadLatch, error ) );
         }
-        executor.shutdown();
 
         try
         {
             long lastProgression = nextId.get();
             // Have max no-progress-timeout quite high to be able to cope with huge
             // I/O congestion spikes w/o failing in vain.
-            while ( !executor.awaitTermination( 30, SECONDS ) )
+            while ( !activeThreadLatch.await( 30, SECONDS ) )
             {
                 if ( lastProgression == nextId.get() )
                 {
-                    // No progression at all, abort?
+                    // No progression at all, abort
                     error.compareAndSet( null, new IOException( "No progress, so forcing abort" ) );
                 }
                 lastProgression = nextId.get();
@@ -110,14 +113,16 @@ class CrashGenerationCleaner
         Throwable finalError = error.get();
         if ( finalError != null )
         {
-            throw launderedException( IOException.class, finalError );
+            Exceptions.throwIfUnchecked( finalError );
+            throw new RuntimeException( finalError );
         }
 
         long endTime = currentTimeMillis();
-        monitor.cleanupFinished( highTreeNodeId - lowTreeNodeId, cleanedPointers.get(), endTime - startTime );
+        monitor.cleanupFinished( pagesToClean, cleanedPointers.get(), endTime - startTime );
     }
 
-    private Runnable cleaner( AtomicLong nextId, AtomicReference<Throwable> error, AtomicInteger cleanedPointers )
+    private Runnable cleaner( AtomicLong nextId, long batchSize, AtomicInteger cleanedPointers, CountDownLatch activeThreadLatch,
+            AtomicReference<Throwable> error )
     {
         return () ->
         {
@@ -148,7 +153,11 @@ class CrashGenerationCleaner
             }
             catch ( Throwable e )
             {
-                error.compareAndSet( null, e );
+                error.accumulateAndGet( e, Exceptions::chain );
+            }
+            finally
+            {
+                activeThreadLatch.countDown();
             }
         };
     }
@@ -182,7 +191,7 @@ class CrashGenerationCleaner
 
             if ( !hasCrashed && TreeNode.isInternal( cursor ) )
             {
-                for ( int i = 0; i <= keyCount && i <= internalMaxKeyCount && !hasCrashed; i++ )
+                for ( int i = 0; i <= keyCount && treeNode.reasonableChildCount( i ) && !hasCrashed; i++ )
                 {
                     hasCrashed = hasCrashedGSPP( cursor, treeNode.childOffset( i ) );
                 }
@@ -216,7 +225,7 @@ class CrashGenerationCleaner
         if ( TreeNode.isInternal( cursor ) )
         {
             int keyCount = TreeNode.keyCount( cursor );
-            for ( int i = 0; i <= keyCount && i <= internalMaxKeyCount; i++ )
+            for ( int i = 0; i <= keyCount && treeNode.reasonableChildCount( i ); i++ )
             {
                 cleanCrashedGSPP( cursor, treeNode.childOffset( i ), cleanedPointers );
             }
@@ -240,5 +249,10 @@ class CrashGenerationCleaner
             GenerationSafePointer.clean( cursor );
             cleanedPointers.incrementAndGet();
         }
+    }
+
+    private String unexpectedGenerations( )
+    {
+        return "Unexpected generations, stableGeneration=" + stableGeneration + ", unstableGeneration=" + unstableGeneration;
     }
 }

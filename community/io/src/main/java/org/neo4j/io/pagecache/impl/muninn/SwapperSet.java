@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -28,6 +28,8 @@ import org.neo4j.collection.primitive.PrimitiveIntIterator;
 import org.neo4j.collection.primitive.PrimitiveIntSet;
 import org.neo4j.io.pagecache.PageSwapper;
 
+import static org.neo4j.helpers.Numbers.safeCastIntToShort;
+
 /**
  * The SwapperSet maintains the set of allocated {@link PageSwapper}s, and their mapping to swapper ids.
  * These swapper ids are a limited resource, so they must eventually be reused as files are mapped and unmapped.
@@ -43,7 +45,7 @@ final class SwapperSet
     // The tombstone is used as a marker to reserve allocation entries that have been freed, but not yet vacuumed.
     // An allocation cannot be reused until it has been vacuumed.
     private static final SwapperMapping TOMBSTONE = new SwapperMapping( 0, null );
-    private static final int MAX_SWAPPER_ID = Short.MAX_VALUE;
+    private static final int MAX_SWAPPER_ID = (1 << 21) - 1;
     private volatile SwapperMapping[] swapperMappings = new SwapperMapping[] { SENTINEL };
     private final PrimitiveIntSet free = Primitive.intSet();
     private final Object vacuumLock = new Object();
@@ -145,7 +147,7 @@ final class SwapperSet
 
     /**
      * Collect all freed page swapper ids, and pass them to the given callback, after which the freed ids will be
-     * elegible for reuse.
+     * eligible for reuse.
      * This is done with careful synchronisation such that allocating and freeing of ids is allowed to mostly proceed
      * concurrently.
      */

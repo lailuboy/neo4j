@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -22,6 +22,8 @@ package org.neo4j.server.rest.transactional;
 import org.codehaus.jackson.JsonGenerator;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.InOrder;
+import org.mockito.Mockito;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -34,6 +36,7 @@ import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Path;
 import org.neo4j.graphdb.PropertyContainer;
 import org.neo4j.graphdb.Relationship;
+import org.neo4j.graphdb.SpatialMocks;
 import org.neo4j.graphdb.spatial.CRS;
 import org.neo4j.graphdb.spatial.Coordinate;
 import org.neo4j.graphdb.spatial.Geometry;
@@ -42,11 +45,17 @@ import org.neo4j.graphdb.spatial.Point;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.neo4j.graphdb.SpatialMocks.mockCartesian;
+import static org.neo4j.graphdb.SpatialMocks.mockCartesian_3D;
+import static org.neo4j.graphdb.SpatialMocks.mockWGS84;
+import static org.neo4j.graphdb.SpatialMocks.mockWGS84_3D;
 
 public class Neo4jJsonCodecTest extends TxStateCheckerTestSupport
 {
@@ -55,7 +64,7 @@ public class Neo4jJsonCodecTest extends TxStateCheckerTestSupport
     private JsonGenerator jsonGenerator;
 
     @Before
-    public void init() throws IOException
+    public void init()
     {
         jsonCodec = new Neo4jJsonCodec( TPTPMC );
         jsonGenerator = mock( JsonGenerator.class );
@@ -77,7 +86,7 @@ public class Neo4jJsonCodecTest extends TxStateCheckerTestSupport
         catch ( IllegalArgumentException e )
         {
             //Then
-            verify( jsonGenerator, times( 0 ) ).writeEndObject();
+            verify( jsonGenerator, never() ).writeEndObject();
             exceptionThrown = true;
         }
 
@@ -229,7 +238,20 @@ public class Neo4jJsonCodecTest extends TxStateCheckerTestSupport
     public void testGeographicPointWriting() throws IOException
     {
         //Given
-        Point value = new MockPoint( 12.3, 45.6, mockWGS84() );
+        Point value = SpatialMocks.mockPoint( 12.3, 45.6, mockWGS84() );
+
+        //When
+        jsonCodec.writeValue( jsonGenerator, value );
+
+        //Then
+        verify( jsonGenerator, times( 3 ) ).writeEndObject();
+    }
+
+    @Test
+    public void testGeographic3DPointWriting() throws IOException
+    {
+        //Given
+        Point value = SpatialMocks.mockPoint( 12.3, 45.6, 78.9, mockWGS84_3D() );
 
         //When
         jsonCodec.writeValue( jsonGenerator, value );
@@ -242,7 +264,20 @@ public class Neo4jJsonCodecTest extends TxStateCheckerTestSupport
     public void testCartesianPointWriting() throws IOException
     {
         //Given
-        Point value = new MockPoint( 123.0, 456.0, mockCartesian() );
+        Point value = SpatialMocks.mockPoint( 123.0, 456.0, mockCartesian() );
+
+        //When
+        jsonCodec.writeValue( jsonGenerator, value );
+
+        //Then
+        verify( jsonGenerator, times( 3 ) ).writeEndObject();
+    }
+
+    @Test
+    public void testCartesian3DPointWriting() throws IOException
+    {
+        //Given
+        Point value = SpatialMocks.mockPoint( 123.0, 456.0, 789.0, mockCartesian_3D() );
 
         //When
         jsonCodec.writeValue( jsonGenerator, value );
@@ -258,7 +293,7 @@ public class Neo4jJsonCodecTest extends TxStateCheckerTestSupport
         List<Coordinate> points = new ArrayList<>();
         points.add( new Coordinate( 1, 2 ) );
         points.add( new Coordinate( 2, 3 ) );
-        Geometry value = new MockGeometry( "LineString", points, mockCartesian() );
+        Geometry value = SpatialMocks.mockGeometry( "LineString", points, mockCartesian() );
 
         //When
         jsonCodec.writeValue( jsonGenerator, value );
@@ -267,79 +302,58 @@ public class Neo4jJsonCodecTest extends TxStateCheckerTestSupport
         verify( jsonGenerator, times( 3 ) ).writeEndObject();
     }
 
-    public static CRS mockWGS84()
+    @Test
+    public void testGeometryCrsStructureCartesian() throws IOException
     {
-        return mockCRS( 4326, "WGS-84", "http://spatialreference.org/ref/epsg/4326/" );
+        verifyCRSStructure( mockCartesian() );
     }
 
-    public static CRS mockCartesian()
+    @Test
+    public void testGeometryCrsStructureCartesian_3D() throws IOException
     {
-        return mockCRS( 7203, "cartesian", "http://spatialreference.org/ref/sr-org/7203/" );
+        verifyCRSStructure( mockCartesian_3D() );
     }
 
-    public static CRS mockCRS( final int code, final String type, final String href )
+    @Test
+    public void testGeometryCrsStructureWGS84() throws IOException
     {
-        return new CRS()
-        {
-            public int getCode()
-            {
-                return code;
-            }
-
-            public String getType()
-            {
-                return type;
-            }
-
-            public String getHref()
-            {
-                return href;
-            }
-        };
+        verifyCRSStructure( mockWGS84() );
     }
 
-    public static class MockPoint extends MockGeometry implements Point
+    @Test
+    public void testGeometryCrsStructureWGS84_3D() throws IOException
     {
-        private final Coordinate coordinate;
-
-        public MockPoint( final double x, final double y, final CRS crs )
-        {
-            super( "Point", new ArrayList<>(), crs );
-            this.coordinate = new Coordinate( x, y );
-            this.coordinates.add( this.coordinate );
-        }
+        verifyCRSStructure( mockWGS84_3D() );
     }
 
-    public static class MockGeometry implements Geometry
+    private void verifyCRSStructure( CRS crs ) throws IOException
     {
-        protected final String geometryType;
-        protected final CRS crs;
-        protected final List<Coordinate> coordinates;
+        // When
+        jsonCodec.writeValue( jsonGenerator, crs );
 
-        public MockGeometry( String geometryType, final List<Coordinate> coordinates, final CRS crs )
-        {
-            this.geometryType = geometryType;
-            this.coordinates = coordinates;
-            this.crs = crs;
-        }
+        // Then verify in order
+        InOrder inOrder = Mockito.inOrder( jsonGenerator );
 
-        @Override
-        public String getGeometryType()
-        {
-            return geometryType;
-        }
-
-        @Override
-        public List<Coordinate> getCoordinates()
-        {
-            return coordinates;
-        }
-
-        @Override
-        public CRS getCRS()
-        {
-            return crs;
-        }
+        // Start CRS object
+        inOrder.verify( jsonGenerator ).writeStartObject();
+        // Code
+        inOrder.verify( jsonGenerator ).writeFieldName( "srid" );
+        inOrder.verify( jsonGenerator ).writeNumber( crs.getCode() );
+        // Name
+        inOrder.verify( jsonGenerator ).writeFieldName( "name" );
+        inOrder.verify( jsonGenerator ).writeString( crs.getType() );
+        // Type
+        inOrder.verify( jsonGenerator ).writeFieldName( "type" );
+        inOrder.verify( jsonGenerator ).writeString( "link" );
+        // Properties
+        inOrder.verify( jsonGenerator ).writeFieldName( "properties" );
+        // Properties object
+        inOrder.verify( jsonGenerator ).writeStartObject();
+        inOrder.verify( jsonGenerator ).writeFieldName( "href" );
+        inOrder.verify( jsonGenerator ).writeString( startsWith( crs.getHref() ) );
+        inOrder.verify( jsonGenerator ).writeFieldName( "type" );
+        inOrder.verify( jsonGenerator ).writeString( "ogcwkt" );
+        // Close both properties and CRS objects
+        inOrder.verify( jsonGenerator, times( 2 ) ).writeEndObject();
     }
-
 }

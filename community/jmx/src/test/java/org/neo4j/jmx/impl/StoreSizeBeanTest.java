@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -25,6 +25,7 @@ import org.junit.Test;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.time.Clock;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -36,16 +37,16 @@ import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.jmx.StoreSize;
 import org.neo4j.kernel.NeoStoreDataSource;
 import org.neo4j.kernel.api.index.IndexDirectoryStructure;
-import org.neo4j.kernel.api.index.SchemaIndexProvider;
-import org.neo4j.kernel.api.index.SchemaIndexProvider.Descriptor;
+import org.neo4j.kernel.api.index.IndexProvider;
+import org.neo4j.kernel.api.index.IndexProvider.Descriptor;
 import org.neo4j.kernel.api.labelscan.LabelScanStore;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.api.ExplicitIndexProviderLookup;
-import org.neo4j.kernel.impl.api.index.SchemaIndexProviderMap;
+import org.neo4j.kernel.impl.api.index.IndexProviderMap;
 import org.neo4j.kernel.impl.transaction.log.files.LogFiles;
 import org.neo4j.kernel.impl.transaction.log.files.LogFilesBuilder;
 import org.neo4j.kernel.impl.transaction.state.DataSourceManager;
-import org.neo4j.kernel.impl.transaction.state.DefaultSchemaIndexProviderMap;
+import org.neo4j.kernel.impl.transaction.state.DefaultIndexProviderMap;
 import org.neo4j.kernel.impl.util.Dependencies;
 import org.neo4j.kernel.internal.DefaultKernelData;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
@@ -82,24 +83,25 @@ public class StoreSizeBeanTest
     private final File storeDir = new File( "" );
     private final LogFiles logFiles = LogFilesBuilder.logFilesBasedOnlyBuilder( storeDir, fs ).build();
     private final ExplicitIndexProviderLookup explicitIndexProviderLookup = mock( ExplicitIndexProviderLookup.class );
-    private final SchemaIndexProvider schemaIndexProvider = mockedSchemaIndexProvider( "providah1" );
-    private final SchemaIndexProvider schemaIndexProvider2 = mockedSchemaIndexProvider( "providah" );
+    private final IndexProvider indexProvider = mockedIndexProvider( "providah1" );
+    private final IndexProvider indexProvider2 = mockedIndexProvider( "providah" );
     private final LabelScanStore labelScanStore = mock( LabelScanStore.class );
     private StoreSize storeSizeBean;
     private File storeDirAbsolute;
+    private ManagementData managementData;
 
     public StoreSizeBeanTest() throws IOException
     {
     }
 
     @Before
-    public void setUp() throws Throwable
+    public void setUp()
     {
         DataSourceManager dataSourceManager = new DataSourceManager();
         GraphDatabaseAPI db = mock( GraphDatabaseAPI.class );
         NeoStoreDataSource dataSource = mock( NeoStoreDataSource.class );
-        SchemaIndexProviderMap schemaIndexProviderMap = new DefaultSchemaIndexProviderMap( schemaIndexProvider,
-                Collections.singleton( schemaIndexProvider2 ) );
+        IndexProviderMap indexProviderMap = new DefaultIndexProviderMap( indexProvider,
+                Collections.singleton( indexProvider2 ) );
 
         // Setup all dependencies
         Dependencies dependencies = new Dependencies();
@@ -107,7 +109,7 @@ public class StoreSizeBeanTest
         dependencies.satisfyDependencies( dataSourceManager );
         dependencies.satisfyDependency( logFiles );
         dependencies.satisfyDependency( explicitIndexProviderLookup );
-        dependencies.satisfyDependency( schemaIndexProviderMap );
+        dependencies.satisfyDependency( indexProviderMap );
         dependencies.satisfyDependency( labelScanStore );
         when( db.getDependencyResolver() ).thenReturn( dependencies );
         when( dataSource.getDependencyResolver() ).thenReturn( dependencies );
@@ -118,20 +120,24 @@ public class StoreSizeBeanTest
 
         // Create bean
         KernelData kernelData = new DefaultKernelData( fs, mock( PageCache.class ), storeDir, Config.defaults(), db );
-        ManagementData data = new ManagementData( new StoreSizeBean(), kernelData, ManagementSupport.load() );
-        storeSizeBean = (StoreSize) new StoreSizeBean().createMBean( data );
+        managementData = new ManagementData( new StoreSizeBean(), kernelData, ManagementSupport.load() );
+        storeSizeBean = StoreSizeBean.createBean( managementData, false, 0, mock( Clock.class ) );
+
+        when( indexProvider.directoryStructure() ).thenReturn( mock( IndexDirectoryStructure.class ) );
+        when( indexProvider2.directoryStructure() ).thenReturn( mock( IndexDirectoryStructure.class ) );
+        when( labelScanStore.getLabelScanStoreFile() ).thenReturn( new File( storeDir, "labelScanStore" ) );
     }
 
-    private SchemaIndexProvider mockedSchemaIndexProvider( String name )
+    private IndexProvider mockedIndexProvider( String name )
     {
-        SchemaIndexProvider provider = mock( SchemaIndexProvider.class );
+        IndexProvider provider = mock( IndexProvider.class );
         when( provider.getProviderDescriptor() ).thenReturn( new Descriptor( name, "1" ) );
         return provider;
     }
 
     private void createFakeStoreDirectory() throws IOException
     {
-        Map<String,Integer> dummyStore = new HashMap<>();
+        Map<String, Integer> dummyStore = new HashMap<>();
         dummyStore.put( NODE_STORE.fileName( STORE ), 1 );
         dummyStore.put( NODE_STORE.fileName( ID ), 2 );
         dummyStore.put( NODE_LABEL_STORE.fileName( STORE ), 3 );
@@ -164,7 +170,7 @@ public class StoreSizeBeanTest
         // COUNTS_STORE_RIGHT is created in the test
 
         storeDirAbsolute = storeDir.getCanonicalFile().getAbsoluteFile();
-        for ( Map.Entry<String,Integer> dummyFile : dummyStore.entrySet() )
+        for ( Map.Entry<String, Integer> dummyFile : dummyStore.entrySet() )
         {
             createFileOfSize( new File( storeDirAbsolute, dummyFile.getKey() ), dummyFile.getValue() );
         }
@@ -174,7 +180,7 @@ public class StoreSizeBeanTest
     public void verifyGroupingOfNodeRelatedFiles() throws Exception
     {
         createFakeStoreDirectory();
-        assertEquals( getExpected(1, 4 ), storeSizeBean.getNodeStoreSize() );
+        assertEquals( getExpected( 1, 4 ), storeSizeBean.getNodeStoreSize() );
     }
 
     @Test
@@ -188,14 +194,14 @@ public class StoreSizeBeanTest
     public void verifyGroupingOfStringRelatedFiles() throws Exception
     {
         createFakeStoreDirectory();
-        assertEquals( getExpected(11, 12 ), storeSizeBean.getStringStoreSize() );
+        assertEquals( getExpected( 11, 12 ), storeSizeBean.getStringStoreSize() );
     }
 
     @Test
     public void verifyGroupingOfArrayRelatedFiles() throws Exception
     {
         createFakeStoreDirectory();
-        assertEquals( getExpected(13, 14 ), storeSizeBean.getArrayStoreSize() );
+        assertEquals( getExpected( 13, 14 ), storeSizeBean.getArrayStoreSize() );
     }
 
     @Test
@@ -216,9 +222,9 @@ public class StoreSizeBeanTest
     public void verifyGroupingOfCountStoreRelatedFiles() throws Exception
     {
         createFakeStoreDirectory();
-        assertEquals( getExpected( 29, 29), storeSizeBean.getCountStoreSize() );
+        assertEquals( getExpected( 29, 29 ), storeSizeBean.getCountStoreSize() );
         createFileOfSize( new File( storeDirAbsolute, COUNTS_STORE_RIGHT.fileName( STORE ) ), 30 );
-        assertEquals( getExpected( 29, 30), storeSizeBean.getCountStoreSize() );
+        assertEquals( getExpected( 29, 30 ), storeSizeBean.getCountStoreSize() );
     }
 
     @Test
@@ -261,14 +267,14 @@ public class StoreSizeBeanTest
             createFileOfSize( schemaIndex, 2 );
             IndexDirectoryStructure directoryStructure = mock( IndexDirectoryStructure.class );
             when( directoryStructure.rootDirectory() ).thenReturn( schemaIndex );
-            when( schemaIndexProvider.directoryStructure() ).thenReturn( directoryStructure );
+            when( indexProvider.directoryStructure() ).thenReturn( directoryStructure );
         }
         {
             File schemaIndex = new File( storeDir, "schemaIndex2" );
             createFileOfSize( schemaIndex, 3 );
             IndexDirectoryStructure directoryStructure = mock( IndexDirectoryStructure.class );
             when( directoryStructure.rootDirectory() ).thenReturn( schemaIndex );
-            when( schemaIndexProvider2.directoryStructure() ).thenReturn( directoryStructure );
+            when( indexProvider2.directoryStructure() ).thenReturn( directoryStructure );
         }
 
         // Label scan store
@@ -278,6 +284,28 @@ public class StoreSizeBeanTest
 
         // Count all files
         assertEquals( 10, storeSizeBean.getIndexStoreSize() );
+    }
+
+    @Test
+    public void shouldCacheValues() throws Throwable
+    {
+        final Clock clock = mock( Clock.class );
+        storeSizeBean = StoreSizeBean.createBean( managementData, false, 100, clock );
+        when( clock.millis() ).thenReturn( 100L );
+
+        createFileOfSize( logFiles.getLogFileForVersion( 0 ), 1 );
+        createFileOfSize( logFiles.getLogFileForVersion( 1 ), 2 );
+
+        assertEquals( 3L, storeSizeBean.getTransactionLogsSize() );
+
+        createFileOfSize( logFiles.getLogFileForVersion( 2 ), 3 );
+        createFileOfSize( logFiles.getLogFileForVersion( 3 ), 4 );
+
+        assertEquals( 3L, storeSizeBean.getTransactionLogsSize() );
+
+        when( clock.millis() ).thenReturn( 200L );
+
+        assertEquals( 10L, storeSizeBean.getTransactionLogsSize() );
     }
 
     private void createFileOfSize( File file, int size ) throws IOException

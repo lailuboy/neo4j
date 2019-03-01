@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -19,7 +19,9 @@
  */
 package org.neo4j.values.storable;
 
-abstract class IntegralArray extends NumberArray
+import org.neo4j.hashing.HashFunction;
+
+public abstract class IntegralArray extends NumberArray
 {
     abstract long longValue( int offset );
 
@@ -39,5 +41,17 @@ abstract class IntegralArray extends NumberArray
     public NumberType numberType()
     {
         return NumberType.INTEGRAL;
+    }
+
+    @Override
+    public long updateHash( HashFunction hashFunction, long hash )
+    {
+        int len = length();
+        hash = hashFunction.update( hash, len );
+        for ( int i = 0; i < len; i++ )
+        {
+            hash = hashFunction.update( hash, longValue( i ) );
+        }
+        return hash;
     }
 }

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002-2017 "Neo Technology,"
- * Network Engine for Objects in Lund AB [http://neotechnology.com]
+ * Copyright (c) 2002-2019 "Neo4j,"
+ * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
  *
@@ -23,16 +23,21 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runners.model.Statement;
 
+import java.io.File;
 import java.util.List;
 
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Result;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.harness.extensionpackage.MyUnmanagedExtension;
 import org.neo4j.harness.junit.Neo4jRule;
 import org.neo4j.helpers.collection.Iterators;
+import org.neo4j.kernel.configuration.Config;
+import org.neo4j.kernel.configuration.Settings;
 import org.neo4j.kernel.configuration.ssl.LegacySslPolicyConfig;
+import org.neo4j.server.configuration.ServerSettings;
 import org.neo4j.test.TestGraphDatabaseFactory;
 import org.neo4j.test.rule.SuppressOutput;
 import org.neo4j.test.rule.TestDirectory;
@@ -56,6 +61,7 @@ public class JUnitRuleTestIT
             .withFixture( "CREATE (u:User)" )
             .withConfig( LegacySslPolicyConfig.certificates_directory.name(),
                     getRelativePath( getSharedTestTemporaryFolder(), LegacySslPolicyConfig.certificates_directory ) )
+            .withConfig( ServerSettings.script_enabled, Settings.TRUE )
             .withFixture( graphDatabaseService ->
             {
                 try ( Transaction tx = graphDatabaseService.beginTx() )
@@ -68,7 +74,7 @@ public class JUnitRuleTestIT
             .withExtension( "/test", MyUnmanagedExtension.class );
 
     @Test
-    public void shouldExtensionWork() throws Exception
+    public void shouldExtensionWork()
     {
         // Given the rule in the beginning of this class
 
@@ -106,13 +112,14 @@ public class JUnitRuleTestIT
     }
 
     @Test
-    public void shouldRuleWorkWithExsitingDirectory()
+    public void shouldRuleWorkWithExistingDirectory() throws Throwable
     {
-        // given
+        // given a data folder, create /databases/graph.db sub-folders.
+        File existingDir = testDirectory.directory( "existing" );
+        File storeDir = Config.defaults( GraphDatabaseSettings.data_directory, existingDir.toPath().toString() )
+                .get( GraphDatabaseSettings.database_path );
+        GraphDatabaseService db = new TestGraphDatabaseFactory().newEmbeddedDatabase( storeDir );
 
-        GraphDatabaseService db = new TestGraphDatabaseFactory()
-                .newEmbeddedDatabaseBuilder( testDirectory.directory() )
-                .newGraphDatabase();
         try
         {
             db.execute( "CREATE ()" );
@@ -122,22 +129,26 @@ public class JUnitRuleTestIT
             db.shutdown();
         }
 
-        // When a rule with an pre-populated graph db directory is used
-        final Neo4jRule ruleWithDirectory =
-                new Neo4jRule( testDirectory.directory() ).copyFrom( testDirectory.directory() );
-        ruleWithDirectory.apply( new Statement()
+        // When a rule with an pre-populated data directory is used
+        File newDir = testDirectory.directory( "new" );
+        final Neo4jRule ruleWithDirectory = new Neo4jRule( newDir )
+                .withConfig( ServerSettings.script_enabled, Settings.TRUE )
+                .copyFrom( existingDir );
+        Statement statement = ruleWithDirectory.apply( new Statement()
         {
             @Override
-            public void evaluate() throws Throwable
+            public void evaluate()
             {
                 // Then the database is not empty
-                Result result = ruleWithDirectory.getGraphDatabaseService()
-                        .execute( "MATCH (n) RETURN count(n) AS " + "count" );
+                Result result = ruleWithDirectory.getGraphDatabaseService().execute( "MATCH (n) RETURN count(n) AS " + "count" );
 
                 List<Object> column = Iterators.asList( result.columnAs( "count" ) );
                 assertEquals( 1, column.size() );
-                assertEquals( 1, column.get( 0 ) );
+                assertEquals( 1L, column.get( 0 ) );
             }
         }, null );
+
+        // Then
+        statement.evaluate();
     }
 }
